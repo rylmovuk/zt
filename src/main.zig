@@ -10,10 +10,10 @@ const st = @import("st.zig");
 pub const Shortcut = struct {
     mod: u32,
     keysym: c.KeySym,
-    func: fn (?*const Arg) void,
+    func: fn (*const Arg) void,
     arg: Arg,
 
-    pub fn init(mod: u32, keysym: c.KeySym, func: fn (?*const Arg) void, arg: Arg) Shortcut {
+    pub fn init(mod: u32, keysym: c.KeySym, func: fn (*const Arg) void, arg: Arg) Shortcut {
         return .{ .mod = mod, .keysym = keysym, .func = func, .arg = arg };
     }
 };
@@ -32,10 +32,11 @@ pub const Key = struct {
     k: c.KeySym,
     mask: u32,
     s: [*:0]const u8,
-    appkey: i2,
-    appcursor: i2,
+    // three-valued logic variables: 0 indifferent, 1 on, -1 off
+    appkey: i3,
+    appcursor: i3,
 
-    pub fn init(k: c.KeySym, mask: u32, s: [*:0]const u8, appkey: i2, appcursor: i2) Key {
+    pub fn init(k: c.KeySym, mask: u32, s: [*:0]const u8, appkey: i3, appcursor: i3) Key {
         return .{ .k = k, .mask = mask, .s = s, .appkey = appkey, .appcursor = appcursor };
     }
 };
@@ -112,8 +113,8 @@ const XWindow = struct {
 
 const XSelection = struct {
     xtarget: c.Atom,
-    primary: ?[*]u8,
-    clipboard: ?[*]u8,
+    primary: ?[*:0]u8,
+    clipboard: ?[*:0]u8,
     tclick1: c.timespec,
     tclick2: c.timespec,
 };
@@ -177,7 +178,7 @@ const Fontcache = struct {
     flags: u32,
     unicodep: st.Rune,
 };
-var frc: ?[]Fontcache = null;
+var frc: []Fontcache = undefined;
 var frccap: usize = 0;
 var usedfont: [*:0]const u8 = undefined;
 var usedfontsize: f64 = 0;
@@ -193,41 +194,73 @@ var opt_name: ?[*:0]const u8 = null;
 // guaranteed by main to be nonnull
 var opt_title: ?[*:0]const u8 = null;
 
-pub fn clipcopy(dummy: ?*const Arg) void {
-    @compileError("TODO clipcopy");
+pub fn clipcopy(_: *const Arg) void {
+    c.free(xsel.clipboard);
+    xsel.clipboard = null;
+
+    if (xsel.primary) |prim| {
+        xsel.clipboard = st.xstrdup(prim);
+        const clipboard = c.XInternAtom(xw.dpy, "CLIPBOARD", 0);
+        _ = c.XSetSelectionOwner(xw.dpy, clipboard, xw.win, c.CurrentTime);
+    }
 }
-pub fn clippaste(dummy: ?*const Arg) void {
-    @compileError("TODO clippaste");
+pub fn clippaste(_: *const Arg) void {
+    const clipboard = c.XInternAtom(xw.dpy, "CLIPBOARD", 0);
+    _ = c.XConvertSelection(
+        xw.dpy,
+        clipboard,
+        xsel.xtarget,
+        clipboard,
+        xw.win,
+        c.CurrentTime,
+    );
 }
-pub fn selpaste(dummy: ?*const Arg) void {
-    @compileError("TODO selpaste");
+pub fn selpaste(_: *const Arg) void {
+    _ = c.XConvertSelection(
+        xw.dpy,
+        c.XA_PRIMARY,
+        xsel.xtarget,
+        c.XA_PRIMARY,
+        xw.win,
+        c.CurrentTime,
+    );
 }
-pub fn numlock(dummy: ?*const Arg) void {
-    @compileError("TODO numlock");
+pub fn numlock(_: *const Arg) void {
+    win.mode ^= MODE_NUMLOCK;
 }
-pub fn zoom(dummy: ?*const Arg) void {
-    @compileError("TODO zoom");
+pub fn zoom(arg: *const Arg) void {
+    const larg = Arg{ .f = usedfontsize + arg.f };
+    zoomabs(&larg);
 }
-pub fn zoomabs(dummy: ?*const Arg) void {
-    @compileError("TODO zoomabs");
+pub fn zoomabs(arg: *const Arg) void {
+    xunloadfonts();
+    xloadfonts(usedfont, arg.f);
+    cresize(0, 0);
+    st.redraw();
+    xhints();
 }
-pub fn zoomreset(dummy: ?*const Arg) void {
-    @compileError("TODO zoomreset");
+pub fn zoomreset(dummy: *const Arg) void {
+    if (defaultfontsize > 0) {
+        const larg = Arg{ .f = defaultfontsize };
+        zoomabs(&larg);
+    }
 }
 
 fn evcol(e: *c.XEvent) u32 {
-    @compileError("TODO evcol");
+    var x = @intCast(u32, e.xbutton.x) - cfg.borderpx;
+    x = st.limit(x, 0, win.tw - 1);
+    return x / win.cw;
 }
 fn evrow(e: *c.XEvent) u32 {
-    @compileError("TODO evrow");
+    var y = @intCast(u32, e.xbutton.y) - cfg.borderpx;
+    y = st.limit(y, 0, win.th - 1);
+    return y / win.ch;
 }
 
 fn mousesel(e: *c.XEvent, done: c_int) void {
     @compileError("TODO mousesel");
 }
-fn mousereport(e: *c.XEvent) void {
-    @compileError("TODO mousereport");
-}
+fn mousereport(e: *c.XEvent) void {}
 fn bpress(e: *c.XEvent) void {
     var now: c.struct_timespec = undefined;
     var snap: st.SelectionSnap = undefined;
@@ -342,10 +375,10 @@ fn selnotify(e: *c.XEvent) void {
     _ = c.XDeleteProperty(xw.dpy, xw.win, property);
 }
 fn xclipcopy() void {
-    @compileError("TODO xclipcopy");
+    clipcopy(Arg.None);
 }
 fn selclear_(e: *c.XEvent) void {
-    @compileError("TODO selclear_");
+    st.selclear();
 }
 fn selrequest(e: *c.XEvent) void {
     var xsre = @ptrCast(*c.XSelectionRequestEvent, e);
@@ -411,11 +444,16 @@ fn selrequest(e: *c.XEvent) void {
         _ = c.fprintf(c.stderr, "Error sending SelectionNotify event\n");
 }
 
-fn setsel(str: []u8, t: Time) void {
-    @compileError("TODO setsel");
+fn setsel(str: [*:0]const u8, t: Time) void {
+    c.free(xsel.primary);
+    xsel.primary = str;
+
+    _ = c.XSetSelectionOwner(xw.dpy, c.XA_PRIMARY, xw.win, t);
+    if (c.XGetSelectionOwner(xw.dpy, c.XA_PRIMARY) != xw.win)
+        st.selclear();
 }
-fn xsetsel(str: []u8) void {
-    @compileError("TODO xsetsel");
+fn xsetsel(str: [*:0]const u8) void {
+    setsel(str, c.CurrentTime);
 }
 fn brelease(e: *c.XEvent) void {
     if (st.IS_SET(MODE_MOUSE) and e.xbutton.state & cfg.forceselmod == 0) {
@@ -424,7 +462,7 @@ fn brelease(e: *c.XEvent) void {
     }
 
     if (e.xbutton.button == c.Button2)
-        selpaste(null)
+        selpaste(Arg.None)
     else if (e.xbutton.button == c.Button1)
         mousesel(e, 1);
 }
@@ -448,7 +486,22 @@ fn cresize(width: u32, height: u32) void {
     st.ttyresize(win.tw, win.th);
 }
 fn xresize(col: u32, row: u32) void {
-    @compileError("TODO xresize");
+    win.tw = col * win.cw;
+    win.th = col * win.ch;
+
+    _ = c.XFreePixmap(xw.dpy, xw.buf);
+    xw.buf = c.XCreatePixmap(
+        xw.dpy,
+        xw.win,
+        win.w,
+        win.h,
+        @intCast(c_uint, c._DefaultDepth(xw.dpy, xw.scr)),
+    );
+    c.XftDrawChange(xw.draw, xw.buf);
+    xclear(0, 0, win.w, win.h);
+
+    // resize to new width
+    xw.specbuf = @ptrCast([*]c.XftGlyphFontSpec, @alignCast(@alignOf([*]c.XftGlyphFontSpec), st.xrealloc(@ptrCast(*allowzero c_void, xw.specbuf), col * @sizeOf(c.XftGlyphFontSpec))));
 }
 fn sixd_to_16bit(x: u3) u16 {
     return @intCast(u16, if (x == 0) 0 else 0x3737 + 0x2828 * @intCast(u16, x));
@@ -496,10 +549,26 @@ fn xloadcols() void {
 }
 
 fn xsetcolorname(x: u32, name: []const u8) u32 {
-    @compileError("TODO xsetcolorname");
+    if (!(0 <= x and x <= dc.collen)) return false;
+
+    if (!xloadcolor(x, name, &ncolor)) return false;
+
+    c.XftColorFree(xw.dpy, xw.vis, xw.cmap, &dc.col[x]);
+    dc.col[x] = ncolor;
+
+    return true;
 }
+
+// Absolute coordinates.
 fn xclear(x1: u32, y1: u32, x2: u32, y2: u32) void {
-    @compileError("TODO xclear");
+    c.XftDrawRect(
+        xw.draw,
+        &dc.col[if (st.IS_SET(MODE_REVERSE)) cfg.defaultfg else cfg.defaultbg],
+        @intCast(c_int, x1),
+        @intCast(c_int, y1),
+        x2 - x1,
+        y2 - y1,
+    );
 }
 fn xhints() void {
     // another monstrosity because i'm sure XClassHint fields aren't actually mutated
@@ -545,7 +614,12 @@ fn xhints() void {
     _ = c.XFree(@ptrCast(?*c_void, sizeh));
 }
 fn xgeommasktogravity(mask: c_int) c_int {
-    @compileError("TODO xgeommasktogravity");
+    return switch (mask & (c.XNegative | c.YNegative)) {
+        0 => c.NorthWestGravity,
+        c.XNegative => c.NorthEastGravity,
+        c.YNegative => c.SouthWestGravity,
+        else => c.SouthEastGravity,
+    };
 }
 fn xloadfont(f: *Font, pattern: *c.FcPattern) bool {
     var configured = c.FcPatternDuplicate(pattern) orelse return false;
@@ -648,10 +722,22 @@ fn xloadfonts(fontstr: [*:0]const u8, fontsize: f64) void {
     c.FcPatternDestroy(pattern);
 }
 fn xunloadfont(f: *Font) void {
-    @compileError("TODO xunloadfont");
+    c.XftFontClose(xw.dpy, f.match);
+    c.FcPatternDestroy(f.pattern);
+    if (f.set) |set|
+        c.FcFontSetDestroy(set);
 }
 fn xunloadfonts() void {
-    @compileError("TODO xunloadfonts");
+    // Free the loaded fonts in the dont cache.
+    while (frc.len > 0) {
+        c.XftFontClose(xw.dpy, frc[frc.len - 1].font);
+        frc.len -= 1;
+    }
+
+    xunloadfont(&dc.font);
+    xunloadfont(&dc.bfont);
+    xunloadfont(&dc.ifont);
+    xunloadfont(&dc.ibfont);
 }
 fn ximopen(dpy: *c.Display) void {
     var destroy: c.XIMCallback = .{
@@ -681,11 +767,13 @@ fn ximopen(dpy: *c.Display) void {
     );
     if (xw.xic == null) die("XCreateIC failed. Could not obtain input method.\n", .{});
 }
-fn ximinstantiate(dpy: *c.Display, client: c.XPointer, call: c.XPointer) void {
-    @compileError("TODO ximinstantiate");
+fn ximinstantiate(dpy: ?*c.Display, client: c.XPointer, call: c.XPointer) callconv(.C) void {
+    ximopen(dpy.?);
+    _ = c.XUnregisterIMInstantiateCallback(xw.dpy, null, null, null, ximinstantiate, null);
 }
 fn ximdestroy(xim: c.XIM, client: c.XPointer, call: c.XPointer) callconv(.C) void {
-    @compileError("TODO ximdestroy");
+    xw.xim = null;
+    _ = c.XRegisterIMInstantiateCallback(xw.dpy, null, null, null, ximinstantiate, null);
 }
 
 fn xinit(cols: u32, rows: u32) void {
@@ -788,7 +876,9 @@ fn xdrawglyphdfontspecs(specs: [*]c.XftGlyphFontSpec, base: Glyph, len: usize, x
     @compileError("TODO xdrawglyphdfontspecs");
 }
 fn xdrawglyph(g: Glyph, x: u32, y: u32) void {
-    @compileError("TODO xdrawglyph");
+    var spec: c.XftGlyphFontSpec = undefined;
+    const numspecs = xmakeglyphfontspecs(&spec, &g, 1, x, y);
+    xdrawglyphfontspecs(&spec, g, numspecs, x, y);
 }
 pub fn xdrawcursor(cx: u32, xy: u32, g: st.Glyph, ox: u32, oy: u32, og: st.Glyph) void {
     @compileError("TODO xdrawcursor");
@@ -814,16 +904,63 @@ fn xsettitle(p: ?[*:0]const u8) void {
     _ = c.XFree(@ptrCast(?*c_void, prop.value));
 }
 pub fn xstartdraw() bool {
-    @compileError("TODO xstartdraw");
+    return st.IS_SET(MODE_VISIBLE);
 }
 fn xdrawline(line: Line, x1: u32, y1: u32, x2: u32) void {
-    @compileError("TODO xdrawline");
+    const specs = xw.specbuf;
+    const numspecs = xmakeglyphfontspecs(specs, &line[x1], x2 - x1, x1, y1);
+    var base: st.Glyph = undefined;
+    var i: u32 = 0;
+    var ox: u32 = 0;
+    var x = x1;
+    while (x < x2 and i < numspecs) : (x += 1) {
+        var new = line[x];
+        if (new.mode == st.ATTR_WDUMMY) continue;
+        if (st.selected(x, y1))
+            new.mode ^= st.ATTR_REVERSE;
+        if (i > 0 and st.ATTRCMP(base, new)) {
+            xdrawglyphdfontspecs(specs, base, i, ox, y1);
+            specs += i;
+            numspecs -= i;
+            i = 0;
+        }
+        if (i == 0) {
+            ox = x;
+            base = new;
+        }
+        i += 1;
+    }
+    if (i > 0)
+        xdrawglyphdfontspecs(specs, base, i, ox, y1);
 }
 pub fn xfinishdraw() void {
-    @compileError("TODO xfinishdraw");
+    _ = c.XCopyArea(
+        xw.dpy,
+        xw.buf,
+        xw.win,
+        dc.gc,
+        0,
+        0,
+        win.w,
+        win.h,
+        0,
+        0,
+    );
+    _ = c.XSetForeground(
+        xw.dpy,
+        dc.gc,
+        dc.col[if (st.IS_SET(MODE_REVERSE)) cfg.defaultfg else cfg.defaultbg].pixel,
+    );
 }
 pub fn xximspot(x: u32, y: u32) void {
-    @compileError("TODO xximspot");
+    const spot: c.XPoint = .{
+        .x = @intCast(c_short, cfg.borderpx + x * win.cw),
+        .y = @intCast(c_short, cfg.borderpx + (y + 1) * win.ch),
+    };
+    const attr = c.XVaCreateNestedList(0, c.XNSpotLocation, &spot, null);
+
+    _ = c.XSetICValues(xw.xic, c.XNPreeditAttributes, attr, null);
+    _ = c.XFree(attr);
 }
 fn expose(ev: *c.XEvent) void {
     st.redraw();
@@ -835,20 +972,34 @@ fn visibility(ev: *c.XEvent) void {
 fn unmap(ev: *c.XEvent) void {
     win.mode &= ~MODE_VISIBLE;
 }
-fn xsetpointermotion(set: u32) void {
-    @compileError("TODO xsetpointermotion");
+fn xsetpointermotion(set: bool) void {
+    st.MODBIT(xw.attrs.event_mask, set, c.PointerMotionMask);
+    _ = c.XChangeWindowAttributes(xw.dpy, xw.win, c.CWEventMask, &xw.attrs);
 }
-fn xsetmode(set: u32, flags: u32) void {
-    @compileError("TODO xsetmode");
+fn xsetmode(set: bool, flags: u32) void {
+    const old_mode = win.mode;
+    st.MODBIT(win.mode, set, flags);
+    if ((win.mode & MODE_REVERSE) != (old_mode & MODE_REVERSE))
+        redraw();
 }
-fn xsetcursor(cursor: u32) void {
-    @compileError("TODO xsetcursor");
+fn xsetcursor(cursor: u32) bool {
+    const cur = if (cursor != 0) cursor else 1;
+    if (!(0 <= cur and cur <= 6)) return false;
+    win.cursor = cur;
+    return true;
 }
-fn xseturgency(add: u32) void {
-    @compileError("TODO xseturgency");
+fn xseturgency(add: bool) void {
+    var h = @as(?*c.XWMHints, c.XGetWMHints(xw.dpy, xw.win)) orelse unreachable;
+
+    st.MODBIT(&h.flags, add, c.XUrgencyHint);
+    _ = c.XSetWMHints(xw.dpy, xw.win, h);
+    _ = c.XFree(h);
 }
 fn xbell() void {
-    @compileError("TODO xbell");
+    if (!st.IS_SET(MODE_FOCUSED))
+        xseturgency(true);
+    if (cfg.bellvolume != 0)
+        _ = c.XkbBell(xw.dpy, xw.win, cfg.bellvolume, @as(c.Atom, null));
 }
 fn focus(ev: *c.XEvent) void {
     var e = &ev.xfocus;
@@ -856,7 +1007,7 @@ fn focus(ev: *c.XEvent) void {
     if (ev.@"type" == c.FocusIn) {
         c.XSetICFocus(xw.xic);
         win.mode |= MODE_FOCUSED;
-        xseturgency(0);
+        xseturgency(false);
         if (win.mode & MODE_FOCUS != 0)
             st.ttywrite("\x1b[I", 3, false);
     } else {
@@ -867,16 +1018,40 @@ fn focus(ev: *c.XEvent) void {
     }
 }
 fn match(mask: u32, state: u32) bool {
-    @compileError("TODO match");
+    return mask == XK_ANY_MOD or mask == (state & ~cfg.ignoremod);
 }
-fn kmap(k: c.KeySym, state: u32) [*]u8 {
-    @compileError("TODO kmap");
+fn kmap(k: c.KeySym, state: u32) ?[*:0]const u8 {
+    for (cfg.mappedkeys) |mk| {
+        if (mk == k) break;
+    } else {
+        if ((k & 0xFFFF) < 0xFD00)
+            return null;
+    }
+
+    for (cfg.key) |kp| {
+        if (kp.k != k)
+            continue;
+
+        if (!match(kp.mask, state))
+            continue;
+
+        if (if (st.IS_SET(MODE_APPKEYPAD)) kp.appkey < 0 else kp.appkey > 0)
+            continue;
+        if (st.IS_SET(MODE_NUMLOCK) and kp.appkey == 2)
+            continue;
+
+        if (if (st.IS_SET(MODE_APPCURSOR)) kp.appcursor < 0 else kp.appcursor > 0)
+            continue;
+
+        return kp.s;
+    }
+
+    return null;
 }
 fn kpress(ev: *c.XEvent) void {
     var e = &ev.xkey;
     var ksym: c.KeySym = undefined;
     var buf: [32]u8 = undefined;
-    var customkey: [*c]u8 = undefined;
     var status: c_int = undefined;
 
     if ((win.mode & (MODE_KBDLOCK)) != 0) return;
@@ -891,8 +1066,7 @@ fn kpress(ev: *c.XEvent) void {
     }
 
     // 2. custom keys from config.h
-    customkey = kmap(ksym, e.state);
-    if (customkey != null) {
+    if (kmap(ksym, e.state)) |customkey| {
         st.ttywrite(customkey, c.strlen(customkey), true);
         return;
     }
@@ -911,7 +1085,7 @@ fn kpress(ev: *c.XEvent) void {
             len = 2;
         }
     }
-    st.ttywrite(&buf, len, true);
+    st.ttywrite(@ptrCast([*:0]u8, &buf), len, true);
 }
 fn cmessage(e: *c.XEvent) void {
     // See xembed specs
@@ -919,7 +1093,7 @@ fn cmessage(e: *c.XEvent) void {
     if (e.xclient.message_type == xw.xembed and e.xclient.format == 32) {
         if (e.xclient.data.l[1] == XEMBED_FOCUS_IN) {
             win.mode |= MODE_FOCUSED;
-            xseturgency(0);
+            xseturgency(false);
         } else if (e.xclient.data.l[1] == XEMBED_FOCUS_OUT) {
             win.mode &= ~MODE_FOCUSED;
         }

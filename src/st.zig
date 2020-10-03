@@ -7,6 +7,10 @@ pub inline fn divceil(n: anytype, d: @TypeOf(n)) @TypeOf(n) {
     return @divTrunc(n + (d - 1), d);
 }
 
+pub inline fn ATTRCMP(a: Glyph, b: Glyph) bool {
+    return a.mode != b.mode or a.fg != b.fg or a.bg != b.bg;
+}
+
 pub inline fn MODBIT(x: anytype, set: bool, bit: @typeInfo(@TypeOf(x)).Pointer.child) void {
     if (set) x.* |= bit else x.* &= ~bit;
 }
@@ -45,17 +49,20 @@ pub const Line = [*]Glyph;
 pub const Arg = union {
     i: c_int,
     ui: c_uint,
-    f: f32,
+    f: f64,
     v: ?*c_void,
+    none: void,
+
+    pub const None = &Arg{ .none = {} };
 };
 
-inline fn limit(x: anytype, low: @TypeOf(x), hi: @TypeOf(x)) @TypeOf(x) {
+pub inline fn limit(x: anytype, low: @TypeOf(x), hi: @TypeOf(x)) @TypeOf(x) {
     return if (x < low) low else if (x > hi) hi else x;
 }
 
 // Arbitrary sizes
 const utf_invalid = 0xFFFD;
-const utf_size;
+const utf_size = 4;
 const esc_buf_size = 128 * utf_size;
 const esc_arg_size = 16;
 const str_buf_size = esc_buf_size;
@@ -173,34 +180,90 @@ var iofd: c_int = 1;
 var cmdfd: c_int = undefined;
 var pid: c.pid_t = undefined;
 
+const utfbyte = [utf_size + 1]u8{ 0x80, 0, 0xC0, 0xE0, 0xF0 };
+const utfmask = [utf_size + 1]u8{ 0xC0, 0x80, 0xE0, 0xF0, 0xF8 };
+const utfmin = [utf_size + 1]Rune{ 0, 0, 0x80, 0x800, 0x10000 };
+const utfmax = [utf_size + 1]Rune{ 0x10FFFF, 0x7F, 0x7FF, 0xFFFF, 0x10FFFF };
+
 fn xwrite(fd: u32, s: [*]const u8, len: usize) isize {
-    @compileError("TODO xwrite");
+    var left = len;
+
+    while (left > 0) {
+        const r = c.write(fd, s, left);
+        if (r < 0) return r;
+        left -= r;
+        s += r;
+    }
+
+    return len;
 }
 pub fn xmalloc(len: usize) *c_void {
     const p = c.malloc(len);
     return p orelse die("malloc: {}\n", .{c.strerror(std.c._errno().*)});
 }
-fn xrealloc(p: *allowzero c_void, len: usize) *c_void {
+pub fn xrealloc(p: *allowzero c_void, len: usize) *c_void {
     const newp = c.realloc(p, len);
     return newp orelse die("realloc: {}\n", .{@as([*:0]const u8, c.strerror(std.c._errno().*))});
 }
-fn xstrdup(s: [*:0]u8) [*:0]u8 {
-    @compileError("TODO xstrdup");
+pub fn xstrdup(s: [*:0]u8) [*:0]u8 {
+    const ns = @as(?[*:0]u8, c.strdup(s));
+    return ns orelse die("strdup: {}\n", .{c.strerror(std.c._errno().*)});
 }
-fn utf8decode(c: [*:0]u8, u: [*]Rune, clen: usize) usize {
-    @compileError("TODO utf8decode");
+fn utf8decode(c: [*:0]u8, u: *Rune, clen: usize) usize {
+    u.* = UTF_INVALID;
+    if (clen == 0) return 0;
+    var len: size_t = undefined;
+    var udecoded = utf8decodebyte(c[0], &len);
+    if (!(1 <= len and len <= utf_size)) return 1;
+    var i: usize = 1;
+    var j: usize = 1;
+    while (i < clen and j < len) : ({
+        i += 1;
+        j += 1;
+    }) {
+        var chtype: usize = undefined;
+        udecoded = (udecoded << 6) | utf8decodebyte(c[i], &chtype);
+        if (chtype != 0) return j;
+    }
+    if (j < len)
+        return 0;
+    u.* = udecoded;
+    _ = utf8validate(u, len);
+
+    return len;
 }
 fn utf8decodebyte(ch: u8, i: *usize) Rune {
-    @compileError("TODO utf8decodebyte");
+    i.* = 0;
+    while (i.* < utfmask.len) : (i.* += 1) {
+        if ((ch & utfmask[i.*]) == utfbyte[i.*])
+            return ch & ~utfmask[i.*];
+    }
+    return 0;
 }
-pub fn utf8encode(u: Rune, ch: [*:0]u8) usize {
-    @compileError("TODO utf8encode");
+pub fn utf8encode(uni: Rune, ch: [*:0]u8) usize {
+    var u = uni;
+    const len = utf8validate(&u, 0);
+    if (len > utf_size)
+        return 0;
+
+    var i: usize = len - 1;
+    while (i > 0) : (i -= 1) {
+        ch[i] = utf8encodebyte(u, 0);
+        u >>= 6;
+    }
+    ch[0] = utf8encodebyte(u, len);
+
+    return len;
 }
 fn utf8encodebyte(u: Rune, i: usize) u8 {
-    @compileError("TODO utf8encodebyte");
+    return @truncate(u8, utfbyte[i] | (u & ~utfmask[i]));
 }
 fn utf8validate(u: *Rune, i: usize) usize {
-    @compileError("TODO utf8validate");
+    if (!(utfmin[i] <= u.* and u.* <= utfmax[i]) or (0xD800 <= u.* and u.* <= 0xDFFF))
+        u.* = utf_invalid;
+    var ni: usize = 1;
+    while (u.* > utfmax[ni]) ni += 1;
+    return ni;
 }
 fn base64dec_getc(src: *[*:0]const u8) u8 {
     @compileError("TODO base64dec_getc");
@@ -216,10 +279,29 @@ pub fn selinit() void {
 }
 
 fn tlinelen(y: u32) u32 {
-    @compileError("TODO tlinelen");
+    var i = term.col;
+
+    if (term.line[y][i - 1].mode & ATTR_WRAP)
+        return i;
+    while (i > 0 and term.line[y][i - 1].u == ' ')
+        i -= 1;
+
+    return i;
 }
 pub fn selstart(col: u32, row: u32, snap: SelectionSnap) void {
-    @compileError("TODO selstart");
+    selclear();
+    sel.mode = .Empty;
+    sel.@"type" = .Regular;
+    sel.alt = IS_SET(MODE_ALTSCREEN);
+    sel.snap = snap;
+    sel.oe.x = col;
+    sel.ob.x = col;
+    sel.oe.y = row;
+    sel.ob.y = row;
+    selnormalize();
+
+    if (sel.snap != 0) sel.mode = .Ready;
+    tsetdirt(sel.nb.y, sel.ne.y);
 }
 fn selextend(col: u32, row: u32, type: SelectionType, done: bool) void {
     @compileError("TODO selextend");
@@ -227,7 +309,7 @@ fn selextend(col: u32, row: u32, type: SelectionType, done: bool) void {
 fn selnormalize() void {
     @compileError("TODO selnormalize");
 }
-fn selected(x: u32, y: u32) u32 {
+fn selected(x: u32, y: u32) bool {
     @compileError("TODO selected");
 }
 fn selsnap(x: *u32, y: *u32, direction: u32) void {
@@ -237,7 +319,10 @@ fn getsel() [*]u8 {
     @compileError("TODO getsel");
 }
 fn selclear() void {
-    @compileError("TODO selclear");
+    if (sel.ob.x == -1) return;
+    sel.mode = .Idle;
+    sel.ob.x = -1;
+    tsetdirt(sel.nb.y, sel.ne.y);
 }
 
 pub fn die(comptime msg: []const u8, params: anytype) noreturn {
@@ -318,14 +403,21 @@ pub fn ttyread() usize {
         std.mem.copy(u8, ttyread_buf[0..], ttyread_buf[written .. written + ttyread_buflen]);
     return @intCast(usize, ret);
 }
-pub fn ttywrite(s: [*]const u8, n: usize, may_echo: bool) void {
+pub fn ttywrite(s: [*:0]const u8, n: usize, may_echo: bool) void {
     @compileError("TODO ttywrite");
 }
 fn ttywriteraw(s: [*]u8, n: usize) void {
     @compileError("TODO ttywriteraw");
 }
 pub fn ttyresize(tw: u32, th: u32) void {
-    @compileError("TODO ttyresize");
+    var w: c.struct_winsize = .{
+        .ws_row = @intCast(c_ushort, term.row),
+        .ws_col = @intCast(c_ushort, term.col),
+        .ws_xpixel = @intCast(c_ushort, tw),
+        .ws_ypixel = @intCast(c_ushort, th),
+    };
+    if (c.ioctl(cmdfd, c.TIOCSWINSZ, &w) < 0)
+        _ = c.fprintf(c.stderr, "Couldn't set window size: %s\n", c.strerror(std.c._errno().*));
 }
 pub fn ttyhangup() void {
     @compileError("TODO ttyhangup");
@@ -486,7 +578,7 @@ fn tclearregion(x_start: u32, y_start: u32, x_end: u32, y_end: u32) void {
         var x = x1;
         while (x <= x2) : (x += 1) {
             var gp = &term.line[y][x];
-            if (selected(x, y) != 0) selclear();
+            if (selected(x, y)) selclear();
             gp.fg = term.c.attr.fg;
             gp.bg = term.c.attr.bg;
             gp.mode = 0;
@@ -549,19 +641,19 @@ fn strdump() void {
 fn strreset() void {
     @compileError("TODO strreset");
 }
-pub fn sendbreak(arg: ?*const Arg) void {
+pub fn sendbreak(arg: *const Arg) void {
     @compileError("TODO sendbreak");
 }
 fn tprinter(s: [*]u8, len: usize) void {
     @compileError("TODO tprinter");
 }
-pub fn toggleprinter(arg: ?*const Arg) void {
+pub fn toggleprinter(arg: *const Arg) void {
     @compileError("TODO toggleprinter");
 }
-pub fn printscreen(arg: ?*const Arg) void {
+pub fn printscreen(arg: *const Arg) void {
     @compileError("TODO printscreen");
 }
-pub fn printsel(arg: ?*const Arg) void {
+pub fn printsel(arg: *const Arg) void {
     @compileError("TODO printsel");
 }
 fn tdumpsel() void {

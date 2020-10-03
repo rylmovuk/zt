@@ -106,7 +106,7 @@ pub const shortcuts = [_]Shortcut{
 };
 // zig fmt: on
 
-pub const mappedkeys = [_]KeySym{-1};
+pub const mappedkeys = [_]KeySym{@bitCast(u16, @as(i16, -1))};
 
 pub const ignoremod = Mod2Mask | XK_SWITCH_MOD;
 
