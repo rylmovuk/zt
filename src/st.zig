@@ -72,17 +72,17 @@ const str_arg_size = esc_arg_size;
 pub inline fn IS_SET(flag: anytype) bool {
     return (term.mode & flag) != 0;
 }
-inline fn ISCONTROLC0(c: u8) bool {
-    return (0 <= c and c <= 0x1f) or c == 0o177;
+inline fn ISCONTROLC0(ch: Rune) bool {
+    return (0 <= ch and ch <= 0x1f) or ch == 0o177;
 }
-inline fn ISCONTROLC1(c: u8) bool {
-    return 0x80 <= c and c <= 0x9f;
+inline fn ISCONTROLC1(ch: Rune) bool {
+    return 0x80 <= ch and ch <= 0x9f;
 }
-inline fn ISCONTROL(c: u8) bool {
-    return ISCONTROLC0(c) or ISCONTROLC1(c);
+inline fn ISCONTROL(ch: Rune) bool {
+    return ISCONTROLC0(ch) or ISCONTROLC1(ch);
 }
-inline fn ISDELIM(u: anytype) bool {
-    return u and wcschr(worddelimiters, u);
+inline fn ISDELIM(u: Rune) bool {
+    return u and c.wcschr(cfg.worddelimiters, @intCast(c.wchar_t, u)) != null;
 }
 
 const MODE_WRAP = 1 << 0;
@@ -119,7 +119,7 @@ const TCursor = struct {
 };
 
 const Selection = struct {
-    const Coords = struct { x: i32 = 0, y: i32 = 0 };
+    const Coords = struct { x: u32 = 0, y: u32 = 0 };
 
     mode: SelectionMode,
     @"type": SelectionType,
@@ -128,7 +128,7 @@ const Selection = struct {
     ne: Coords,
     ob: Coords,
     oe: Coords,
-    alt: u32,
+    alt: bool,
 };
 
 const Term = struct {
@@ -185,17 +185,19 @@ const utfmask = [utf_size + 1]u8{ 0xC0, 0x80, 0xE0, 0xF0, 0xF8 };
 const utfmin = [utf_size + 1]Rune{ 0, 0, 0x80, 0x800, 0x10000 };
 const utfmax = [utf_size + 1]Rune{ 0x10FFFF, 0x7F, 0x7FF, 0xFFFF, 0x10FFFF };
 
-fn xwrite(fd: u32, s: [*]const u8, len: usize) isize {
-    var left = len;
+fn xwrite(fd: c_int, str: []const u8) isize {
+    var left = str.len;
+    var s = str.ptr;
 
     while (left > 0) {
-        const r = c.write(fd, s, left);
-        if (r < 0) return r;
+        const written = c.write(fd, s, left);
+        if (written < 0) return written;
+        const r = @intCast(usize, written);
         left -= r;
         s += r;
     }
 
-    return len;
+    return @intCast(isize, str.len);
 }
 pub fn xmalloc(len: usize) *c_void {
     const p = c.malloc(len);
@@ -209,20 +211,20 @@ pub fn xstrdup(s: [*:0]u8) [*:0]u8 {
     const ns = @as(?[*:0]u8, c.strdup(s));
     return ns orelse die("strdup: {}\n", .{c.strerror(std.c._errno().*)});
 }
-fn utf8decode(c: [*:0]u8, u: *Rune, clen: usize) usize {
-    u.* = UTF_INVALID;
-    if (clen == 0) return 0;
-    var len: size_t = undefined;
-    var udecoded = utf8decodebyte(c[0], &len);
+fn utf8decode(ch: []const u8, u: *Rune) usize {
+    u.* = utf_invalid;
+    if (ch.len == 0) return 0;
+    var len: usize = undefined;
+    var udecoded = utf8decodebyte(ch[0], &len);
     if (!(1 <= len and len <= utf_size)) return 1;
     var i: usize = 1;
     var j: usize = 1;
-    while (i < clen and j < len) : ({
+    while (i < ch.len and j < len) : ({
         i += 1;
         j += 1;
     }) {
         var chtype: usize = undefined;
-        udecoded = (udecoded << 6) | utf8decodebyte(c[i], &chtype);
+        udecoded = (udecoded << 6) | utf8decodebyte(ch[i], &chtype);
         if (chtype != 0) return j;
     }
     if (j < len)
@@ -275,7 +277,7 @@ fn base64dec(src: [*:0]const u8) [*:0]u8 {
 pub fn selinit() void {
     sel.mode = .Idle;
     sel.snap = .None;
-    sel.ob.x = -1;
+    sel.ob.x = std.math.maxInt(u32);
 }
 
 fn tlinelen(y: u32) u32 {
@@ -300,7 +302,7 @@ pub fn selstart(col: u32, row: u32, snap: SelectionSnap) void {
     sel.ob.y = row;
     selnormalize();
 
-    if (sel.snap != 0) sel.mode = .Ready;
+    if (sel.snap != .None) sel.mode = .Ready;
     tsetdirt(sel.nb.y, sel.ne.y);
 }
 fn selextend(col: u32, row: u32, type: SelectionType, done: bool) void {
@@ -309,19 +311,27 @@ fn selextend(col: u32, row: u32, type: SelectionType, done: bool) void {
 fn selnormalize() void {
     @compileError("TODO selnormalize");
 }
-fn selected(x: u32, y: u32) bool {
-    @compileError("TODO selected");
+pub fn selected(x: u32, y: u32) bool {
+    if (sel.mode == .Empty or sel.ob.x == std.math.maxInt(u32) or sel.alt != IS_SET(MODE_ALTSCREEN))
+        return false;
+
+    if (sel.@"type" == .Rectangular)
+        return sel.nb.y <= y and y <= sel.ne.y;
+
+    return (sel.nb.y <= y and y <= sel.ne.y) //
+        and (y != sel.nb.y or x >= sel.nb.x) //
+        and (y != sel.ne.y or x <= sel.ne.x);
 }
 fn selsnap(x: *u32, y: *u32, direction: u32) void {
     @compileError("TODO selsnap");
 }
-fn getsel() [*]u8 {
+fn getsel() ?[*:0]u8 {
     @compileError("TODO getsel");
 }
 fn selclear() void {
-    if (sel.ob.x == -1) return;
+    if (sel.ob.x == std.math.maxInt(u32)) return;
     sel.mode = .Idle;
-    sel.ob.x = -1;
+    sel.ob.x = std.math.maxInt(u32);
     tsetdirt(sel.nb.y, sel.ne.y);
 }
 
@@ -330,14 +340,71 @@ pub fn die(comptime msg: []const u8, params: anytype) noreturn {
     std.os.exit(1);
 }
 
-fn execsh(cmd: [*:0]const u8, args: ?[*:null]const ?[*:0]const u8) void {
-    @compileError("TODO execsh");
+fn execsh(cmd: [*:0]const u8, arguments: ?[*:null]const ?[*:0]const u8) void {
+    std.c._errno().* = 0;
+    const pw = @as(?*c.struct_passwd, c.getpwuid(c.getuid())) orelse {
+        if (std.c._errno().* != 0)
+            die("getpwuid: {}\n", .{c.strerror(std.c._errno().*)})
+        else
+            die("who are you?\n", .{});
+    };
+
+    const sh = @ptrCast(?[*:0]const u8, c.getenv("SHELL")) orelse
+        if (pw.pw_shell[0] != 0) @as([*:0]const u8, pw.pw_shell) else cmd;
+
+    var prog = if (arguments) |args|
+        args[0]
+    else if (cfg.utmp) |utmp|
+        utmp
+    else
+        sh;
+    const args = arguments orelse &[_:null]?[*:0]const u8{prog};
+
+    _ = c.unsetenv("COLUMNS");
+    _ = c.unsetenv("LINES");
+    _ = c.unsetenv("TERMCAP");
+    _ = c.setenv("LOGNAME", pw.pw_name, 1);
+    _ = c.setenv("USER", pw.pw_name, 1);
+    _ = c.setenv("SHELL", sh, 1);
+    _ = c.setenv("HOME", pw.pw_dir, 1);
+    _ = c.setenv("TERM", cfg.termname, 1);
+
+    const SIG_DFL = null;
+    _ = c.signal(c.SIGCHLD, SIG_DFL);
+    _ = c.signal(c.SIGHUP, SIG_DFL);
+    _ = c.signal(c.SIGINT, SIG_DFL);
+    _ = c.signal(c.SIGQUIT, SIG_DFL);
+    _ = c.signal(c.SIGTERM, SIG_DFL);
+    _ = c.signal(c.SIGALRM, SIG_DFL);
+
+    // another monstrosity because of wrong qualifiers on C pointers
+    _ = c.execvp(prog, @intToPtr([*c]const [*c]u8, @ptrToInt(args)));
+    c._exit(1);
 }
 fn sigchld(a: c_int) callconv(.C) void {
     @compileError("TODO sigchld");
 }
-fn stty(args: ?[*:null]const ?[*:0]const u8) void {
-    @compileError("TODO stty");
+fn stty(arguments: ?[*:null]const ?[*:0]const u8) void {
+    var cmd: [c._POSIX_ARG_MAX]u8 = undefined;
+    var n = cfg.stty_args.len;
+    if (n > cmd.len - 1)
+        die("incorrect stty parameters\n", .{});
+    std.mem.copy(u8, cmd[0..], cfg.stty_args);
+    var q = cmd[n..];
+    if (arguments) |args| {
+        var p = args;
+        while (p.*) |s| : (p += 1) {
+            const a = std.mem.span(s);
+            if (a.len > q.len - 1)
+                die("stty parameter length too long\n", .{});
+            q[0] = ' ';
+            std.mem.copy(u8, q[1..], a);
+            q = q[a.len + 1 ..];
+        }
+    }
+    q[0] = 0;
+    if (c.system(&cmd) != 0)
+        c.perror("Couldn't call stty");
 }
 pub fn ttynew(line: ?[*:0]const u8, cmd: [*:0]const u8, out: ?[*:0]const u8, args: ?[*:null]const ?[*:0]const u8) std.os.fd_t {
     var m: c_int = undefined;
@@ -396,18 +463,80 @@ pub fn ttyread() usize {
     if (ret < 0)
         die("couldn't read from shell: {}\n", .{c.strerror(std.c._errno().*)});
     ttyread_buflen += @intCast(usize, ret);
-    written = twrite(&ttyread_buf, ttyread_buflen, false);
+    written = twrite(ttyread_buf[0..ttyread_buflen], false);
     ttyread_buflen -= written;
     // keep any uncomplete utf8 char for the next call
     if (ttyread_buflen > 0)
         std.mem.copy(u8, ttyread_buf[0..], ttyread_buf[written .. written + ttyread_buflen]);
     return @intCast(usize, ret);
 }
-pub fn ttywrite(s: [*:0]const u8, n: usize, may_echo: bool) void {
-    @compileError("TODO ttywrite");
+pub fn ttywrite(str: []const u8, may_echo: bool) void {
+    if (may_echo and IS_SET(MODE_ECHO))
+        _ = twrite(str, true);
+
+    if (!IS_SET(MODE_CRLF)) {
+        ttywriteraw(str);
+        return;
+    }
+
+    // This is similar to how the kernel handles ONLCR for ttys
+    var i: usize = 0;
+    while (i < str.len) {
+        var n: usize = undefined;
+        if (str[i] == '\r') {
+            n = 1;
+            ttywriteraw("\r\n");
+        } else {
+            n = std.mem.indexOfScalar(u8, str[i..], '\r') orelse str.len - i;
+            ttywriteraw(str[i .. i + n]);
+        }
+        i += n;
+    }
 }
-fn ttywriteraw(s: [*]u8, n: usize) void {
-    @compileError("TODO ttywriteraw");
+fn ttywriteraw(s: []const u8) void {
+    var lim: usize = 256;
+
+    // Remember that we are using a pty, which might be a modem line.
+    // Writing too much will clog the line. That's why we are doing this
+    // dance.
+    // FIXME: Migrate the world to Plan 9.
+    var i: usize = 0;
+    while (i < s.len) {
+        const n = s.len - i;
+        var wfd: c.fd_set = undefined;
+        var rfd: c.fd_set = undefined;
+        c._FD_ZERO(&wfd);
+        c._FD_ZERO(&rfd);
+        c._FD_SET(cmdfd, &wfd);
+        c._FD_SET(cmdfd, &rfd);
+
+        // Check if we can write.
+        if (c.pselect(cmdfd + 1, &rfd, &wfd, null, null, null) < 0) {
+            if (std.c._errno().* == c.EINTR) continue;
+            die("select failed: {}\n", .{c.strerror(std.c._errno().*)});
+        }
+        if (c._FD_ISSET(cmdfd, &wfd)) {
+            // Only write the bytes written by ttywrite() or the
+            // default of 256. This seems to be a reasonable value
+            // for a serial line. Bigger values might clog the I/O.
+            const written = c.write(cmdfd, s[i..].ptr, std.math.min(n, lim));
+            if (written < 0)
+                die("write error on tty: {}\n", .{c.strerror(std.c._errno().*)});
+            const r = @intCast(usize, written);
+            if (r < n) {
+                // We weren't able to write out everything.
+                // This means the buffer is getting full again. Empty it.
+                if (n < lim) lim = ttyread();
+                i += r;
+            } else {
+                // All bytes have been written.
+                break;
+            }
+        }
+        if (c._FD_ISSET(cmdfd, &rfd))
+            lim = ttyread();
+    }
+    return;
 }
 pub fn ttyresize(tw: u32, th: u32) void {
     var w: c.struct_winsize = .{
@@ -420,9 +549,11 @@ pub fn ttyresize(tw: u32, th: u32) void {
         _ = c.fprintf(c.stderr, "Couldn't set window size: %s\n", c.strerror(std.c._errno().*));
 }
 pub fn ttyhangup() void {
-    @compileError("TODO ttyhangup");
+    // Send SIGHUP to shell
+    _ = c.kill(pid, c.SIGHUP);
 }
 pub fn tattrset(attr: u32) bool {
+    // Send SIGHUP to shell
     var i: usize = 0;
     while (i < (term.row - 1)) : (i += 1) {
         var j: usize = 0;
@@ -639,28 +770,41 @@ fn strdump() void {
     @compileError("TODO strdump");
 }
 fn strreset() void {
-    @compileError("TODO strreset");
+    strescseq = std.mem.zeroes(STREscape);
 }
 pub fn sendbreak(arg: *const Arg) void {
-    @compileError("TODO sendbreak");
+    if (c.tcsendbreak(cmdfd, 0) != 0)
+        c.perror("Error sending break");
 }
-fn tprinter(s: [*]u8, len: usize) void {
-    @compileError("TODO tprinter");
+fn tprinter(s: []const u8) void {
+    if (iofd != -1 and xwrite(iofd, s) < 0) {
+        c.perror("Error writing to output file");
+        _ = c.close(iofd);
+        iofd = -1;
+    }
 }
-pub fn toggleprinter(arg: *const Arg) void {
-    @compileError("TODO toggleprinter");
+pub fn toggleprinter(_: *const Arg) void {
+    term.mode ^= MODE_PRINT;
 }
-pub fn printscreen(arg: *const Arg) void {
-    @compileError("TODO printscreen");
+pub fn printscreen(_: *const Arg) void {
+    tdump();
 }
-pub fn printsel(arg: *const Arg) void {
-    @compileError("TODO printsel");
+pub fn printsel(_: *const Arg) void {
+    tdumpsel();
 }
 fn tdumpsel() void {
-    @compileError("TODO tdumpsel");
+    if (getsel()) |ptr| {
+        tprinter(std.mem.span(ptr));
+        c.free(ptr);
+    }
+}
+fn tdumpline(n: u32) void {
+    @compileError("TODO tdumpline");
 }
 fn tdump() void {
-    @compileError("TODO tdump");
+    var i: u32 = 0;
+    while (i < term.row) : (i += 1)
+        tdumpline(i);
 }
 fn tputtab(n: u32) void {
     @compileError("TODO tputtab");
@@ -686,8 +830,32 @@ fn eschandle(ascii: u8) bool {
 fn tputc(u: Rune) void {
     @compileError("TODO tputc");
 }
-fn twrite(buf: [*]const u8, buflen: usize, show_ctrl: bool) usize {
-    @compileError("TODO twrite");
+fn twrite(buf: []const u8, show_ctrl: bool) usize {
+    var charsize: usize = undefined;
+    var n: usize = 0;
+    while (n < buf.len) : (n += charsize) {
+        var u: Rune = undefined;
+        if (IS_SET(MODE_UTF8) and !IS_SET(MODE_SIXEL)) {
+            // process a complete utf8 char
+            charsize = utf8decode(buf[n..], &u);
+            if (charsize == 0) break;
+        } else {
+            u = buf[n] & 0xFF;
+            charsize = 1;
+        }
+        if (show_ctrl and ISCONTROL(u)) {
+            if (u & 0x80 != 0) {
+                u &= 0x7f;
+                tputc('^');
+                tputc('[');
+            } else if (u != '\n' and u != '\r' and u != '\t') {
+                u ^= 0x40;
+                tputc('^');
+            }
+        }
+        tputc(u);
+    }
+    return n;
 }
 
 pub fn tresize(col: u32, row: u32) void {
@@ -768,7 +936,13 @@ pub fn tresize(col: u32, row: u32) void {
 }
 
 fn drawregion(x1: u32, y1: u32, x2: u32, y2: u32) void {
-    @compileError("TODO drawregion");
+    var y = y1;
+    while (y < y2) : (y += 1) {
+        if (!term.dirty[y]) continue;
+
+        term.dirty[y] = false;
+        main.xdrawline(term.line[y], x1, y, x2);
+    }
 }
 pub fn draw() void {
     var cx = term.c.x;
@@ -794,5 +968,6 @@ pub fn draw() void {
     main.xximspot(term.ocx, term.ocy);
 }
 pub fn redraw() void {
-    @compileError("TODO redraw");
+    tfulldirt();
+    draw();
 }

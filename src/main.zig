@@ -7,6 +7,8 @@ const cfg = @import("config.zig");
 const c = @import("c.zig");
 const st = @import("st.zig");
 
+const Glyph = st.Glyph;
+
 pub const Shortcut = struct {
     mod: u32,
     keysym: c.KeySym,
@@ -270,7 +272,7 @@ fn bpress(e: *c.XEvent) void {
     }
     for (cfg.mshortcuts) |ms| {
         if (e.xbutton.button == ms.b and match(ms.mask, e.xbutton.state)) {
-            st.ttywrite(ms.s, c.strlen(ms.s), true);
+            st.ttywrite(std.mem.span(ms.s), true);
             return;
         }
     }
@@ -361,10 +363,10 @@ fn selnotify(e: *c.XEvent) void {
         }
 
         if (st.IS_SET(MODE_BRCKTPASTE) and ofs == 0)
-            st.ttywrite("\x1b[200~", 6, false);
-        st.ttywrite(data, nitems * @intCast(usize, format) / 8, true);
+            st.ttywrite("\x1b[200~", false);
+        st.ttywrite(data[0 .. nitems * @intCast(usize, format) / 8], true);
         if (st.IS_SET(MODE_BRCKTPASTE) and rem == 0)
-            st.ttywrite("\x1b[201~", 6, false);
+            st.ttywrite("\x1b[201~", false);
         _ = c.XFree(data);
 
         ofs += nitems * @intCast(usize, format) / 32;
@@ -880,7 +882,7 @@ fn xdrawglyph(g: Glyph, x: u32, y: u32) void {
     const numspecs = xmakeglyphfontspecs(&spec, &g, 1, x, y);
     xdrawglyphfontspecs(&spec, g, numspecs, x, y);
 }
-pub fn xdrawcursor(cx: u32, xy: u32, g: st.Glyph, ox: u32, oy: u32, og: st.Glyph) void {
+pub fn xdrawcursor(cx: u32, xy: u32, g: Glyph, ox: u32, oy: u32, og: Glyph) void {
     @compileError("TODO xdrawcursor");
 }
 
@@ -906,10 +908,10 @@ fn xsettitle(p: ?[*:0]const u8) void {
 pub fn xstartdraw() bool {
     return st.IS_SET(MODE_VISIBLE);
 }
-fn xdrawline(line: Line, x1: u32, y1: u32, x2: u32) void {
-    const specs = xw.specbuf;
-    const numspecs = xmakeglyphfontspecs(specs, &line[x1], x2 - x1, x1, y1);
-    var base: st.Glyph = undefined;
+pub fn xdrawline(line: st.Line, x1: u32, y1: u32, x2: u32) void {
+    var specs = xw.specbuf;
+    var numspecs = xmakeglyphfontspecs(specs, &line[x1], x2 - x1, x1, y1);
+    var base: Glyph = undefined;
     var i: u32 = 0;
     var ox: u32 = 0;
     var x = x1;
@@ -1009,12 +1011,12 @@ fn focus(ev: *c.XEvent) void {
         win.mode |= MODE_FOCUSED;
         xseturgency(false);
         if (win.mode & MODE_FOCUS != 0)
-            st.ttywrite("\x1b[I", 3, false);
+            st.ttywrite("\x1b[I", false);
     } else {
         c.XUnsetICFocus(xw.xic);
         win.mode &= ~MODE_FOCUSED;
         if (win.mode & MODE_FOCUS != 0)
-            st.ttywrite("\x1b[O", 3, false);
+            st.ttywrite("\x1b[O", false);
     }
 }
 fn match(mask: u32, state: u32) bool {
@@ -1067,7 +1069,7 @@ fn kpress(ev: *c.XEvent) void {
 
     // 2. custom keys from config.h
     if (kmap(ksym, e.state)) |customkey| {
-        st.ttywrite(customkey, c.strlen(customkey), true);
+        st.ttywrite(std.mem.span(customkey), true);
         return;
     }
 
@@ -1085,7 +1087,7 @@ fn kpress(ev: *c.XEvent) void {
             len = 2;
         }
     }
-    st.ttywrite(@ptrCast([*:0]u8, &buf), len, true);
+    st.ttywrite(buf[0..len], true);
 }
 fn cmessage(e: *c.XEvent) void {
     // See xembed specs

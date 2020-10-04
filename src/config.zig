@@ -10,7 +10,7 @@ pub const font = "Liberation Mono:pixelsize=12:antialias=true:autohint=true";
 pub const borderpx = 2;
 
 pub const shell = "/bin/sh";
-pub const utmp = null;
+pub const utmp: ?[*:0]const u8 = null;
 pub const stty_args = "stty raw pass8 nl -echo -iexten -cstopb 38400";
 
 pub const vtiden = "\x1b[?6c";
@@ -18,7 +18,7 @@ pub const vtiden = "\x1b[?6c";
 pub const cwscale = 1.0;
 pub const chscale = 1.0;
 
-pub const worddelimiters = [_]u16{' '};
+pub const worddelimiters = [_]wchar_t{' '};
 
 pub const doubleclicktimeout = 300;
 pub const tripleclicktimeout = 600;

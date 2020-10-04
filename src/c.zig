@@ -9,7 +9,9 @@ pub usingnamespace @cImport({
     @cInclude("time.h");
     @cInclude("unistd.h");
     @cInclude("signal.h");
+    @cInclude("pwd.h");
     @cInclude("sys/select.h");
+    @cInclude("sys/types.h");
     @cInclude("X11/Xatom.h");
     @cInclude("X11/Xlib.h");
     @cInclude("X11/cursorfont.h");
