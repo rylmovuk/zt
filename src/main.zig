@@ -413,7 +413,7 @@ fn selrequest(e: *c.XEvent) void {
         // xith XA_STRING non ascii characters may be incorrect in the
         // requestor. It is not our problem, use utf8.
         const clipboard = c.XInternAtom(xw.dpy, "CLIPBOARD", 0);
-        const seltext = if (xsre.selection == c.XA_PRIMARY)
+        const seltext: ?[*:0]u8 = if (xsre.selection == c.XA_PRIMARY)
             xsel.primary
         else if (xsre.selection == clipboard)
             xsel.clipboard
@@ -421,7 +421,7 @@ fn selrequest(e: *c.XEvent) void {
             _ = c.fprintf(c.stderr, "Unhandled clipboard selection 0x%lx\n", xsre.selection);
             return;
         };
-        if (seltext != null) {
+        if (seltext) |text| {
             _ = c.XChangeProperty(
                 xsre.display,
                 xsre.requestor,
@@ -429,8 +429,8 @@ fn selrequest(e: *c.XEvent) void {
                 xsre.target,
                 8,
                 c.PropModeReplace,
-                @ptrCast([*]u8, seltext),
-                @intCast(c_int, c.strlen(seltext)),
+                text,
+                @intCast(c_int, std.mem.len(text)),
             );
             xev.property = xsre.property;
         }
