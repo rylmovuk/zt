@@ -3,12 +3,14 @@ const c = @import("c.zig");
 const main = @import("main.zig");
 const cfg = @import("config.zig");
 
+const Bitset = @import("util.zig").Bitset;
+
 pub inline fn divceil(n: anytype, d: @TypeOf(n)) @TypeOf(n) {
     return @divTrunc(n + (d - 1), d);
 }
 
 pub inline fn ATTRCMP(a: Glyph, b: Glyph) bool {
-    return a.mode != b.mode or a.fg != b.fg or a.bg != b.bg;
+    return a.mode.bits != b.mode.bits or a.fg != b.fg or a.bg != b.bg;
 }
 
 pub inline fn MODBIT(x: anytype, set: bool, bit: @typeInfo(@TypeOf(x)).Pointer.child) void {
@@ -18,19 +20,19 @@ pub inline fn TIMEDIFF(t1: c.struct_timespec, t2: c.struct_timespec) c_long {
     return (t1.tv_sec - t2.tv_sec) * 1000 + @divTrunc(t1.tv_nsec - t2.tv_nsec, 1_000_000);
 }
 
-pub const ATTR_NULL = 0;
-pub const ATTR_BOLD = 1 << 0;
-pub const ATTR_FAINT = 1 << 1;
-pub const ATTR_ITALIC = 1 << 2;
-pub const ATTR_UNDERLINE = 1 << 3;
-pub const ATTR_BLINK = 1 << 4;
-pub const ATTR_REVERSE = 1 << 5;
-pub const ATTR_INVISIBLE = 1 << 6;
-pub const ATTR_STRUCK = 1 << 7;
-pub const ATTR_WRAP = 1 << 8;
-pub const ATTR_WIDE = 1 << 9;
-pub const ATTR_WDUMMY = 1 << 10;
-pub const ATTR_BOLD_FAINT = ATTR_BOLD | ATTR_FAINT;
+pub const Attr = Bitset(enum {
+    Bold,
+    Faint,
+    Italic,
+    Underline,
+    Blink,
+    Reverse,
+    Invisible,
+    Struck,
+    Wrap,
+    Wide,
+    WDummy,
+});
 
 const SelectionMode = enum { Idle, Empty, Ready };
 const SelectionType = enum(u2) { Regular = 1, Rectangular = 2 };
@@ -39,7 +41,7 @@ pub const Rune = u32;
 
 pub const Glyph = struct {
     u: Rune = 0,
-    mode: u16 = 0,
+    mode: Attr = Attr.empty,
     fg: u32,
     bg: u32,
 };
@@ -69,9 +71,6 @@ const str_buf_size = esc_buf_size;
 const str_arg_size = esc_arg_size;
 
 // Macros
-pub inline fn IS_SET(flag: anytype) bool {
-    return (term.mode & flag) != 0;
-}
 inline fn ISCONTROLC0(ch: Rune) bool {
     return (0 <= ch and ch <= 0x1f) or ch == 0o177;
 }
@@ -85,14 +84,16 @@ inline fn ISDELIM(u: Rune) bool {
     return u and c.wcschr(cfg.worddelimiters, @intCast(c.wchar_t, u)) != null;
 }
 
-const MODE_WRAP = 1 << 0;
-const MODE_INSERT = 1 << 1;
-const MODE_ALTSCREEN = 1 << 2;
-const MODE_CRLF = 1 << 3;
-const MODE_ECHO = 1 << 4;
-const MODE_PRINT = 1 << 5;
-const MODE_UTF8 = 1 << 6;
-const MODE_SIXEL = 1 << 7;
+const TermMode = Bitset(enum {
+    Wrap,
+    Insert,
+    Altscreen,
+    CrLf,
+    Echo,
+    Print,
+    Utf8,
+    Sixel,
+});
 
 const CursorMovement = enum { Save, Load };
 
@@ -142,7 +143,7 @@ const Term = struct {
     ocy: u32 = 0,
     top: u32 = 0,
     bot: u32 = 0,
-    mode: u32 = 0,
+    mode: TermMode = TermMode.empty,
     esc: u32 = 0,
     trantbl: [4]Charset = undefined,
     charset: u32 = 0,
@@ -283,7 +284,7 @@ pub fn selinit() void {
 fn tlinelen(y: u32) u32 {
     var i = term.col;
 
-    if (term.line[y][i - 1].mode & ATTR_WRAP)
+    if (term.line[y][i - 1].mode.get(.Wrap))
         return i;
     while (i > 0 and term.line[y][i - 1].u == ' ')
         i -= 1;
@@ -294,7 +295,7 @@ pub fn selstart(col: u32, row: u32, snap: SelectionSnap) void {
     selclear();
     sel.mode = .Empty;
     sel.@"type" = .Regular;
-    sel.alt = IS_SET(MODE_ALTSCREEN);
+    sel.alt = term.mode.get(.Altscreen);
     sel.snap = snap;
     sel.oe.x = col;
     sel.ob.x = col;
@@ -312,7 +313,7 @@ fn selnormalize() void {
     @compileError("TODO selnormalize");
 }
 pub fn selected(x: u32, y: u32) bool {
-    if (sel.mode == .Empty or sel.ob.x == std.math.maxInt(u32) or sel.alt != IS_SET(MODE_ALTSCREEN))
+    if (sel.mode == .Empty or sel.ob.x == std.math.maxInt(u32) or sel.alt != term.mode.get(.Altscreen))
         return false;
 
     if (sel.@"type" == .Rectangular)
@@ -410,7 +411,7 @@ pub fn ttynew(line: ?[*:0]const u8, cmd: [*:0]const u8, out: ?[*:0]const u8, arg
     var m: c_int = undefined;
     var s: c_int = undefined;
     if (out != null) {
-        term.mode |= MODE_PRINT;
+        term.mode.set(.Print, true);
         iofd = if (c.strcmp(out, "-") == 0) 1 else c.open(out, c.O_WRONLY | c.O_CREAT, 0o666);
         if (iofd < 0) {
             _ = c.fprintf(c.stderr, "Error opening %s:%s\n", out, c.strerror(std.c._errno().*));
@@ -471,10 +472,10 @@ pub fn ttyread() usize {
     return @intCast(usize, ret);
 }
 pub fn ttywrite(str: []const u8, may_echo: bool) void {
-    if (may_echo and IS_SET(MODE_ECHO))
+    if (may_echo and term.mode.get(.Echo))
         _ = twrite(str, true);
 
-    if (!IS_SET(MODE_CRLF)) {
+    if (!term.mode.get(.CrLf)) {
         ttywriteraw(str);
         return;
     }
@@ -552,13 +553,13 @@ pub fn ttyhangup() void {
     // Send SIGHUP to shell
     _ = c.kill(pid, c.SIGHUP);
 }
-pub fn tattrset(attr: u32) bool {
+pub fn tattrset(attr: Attr.Elem) bool {
     // Send SIGHUP to shell
     var i: usize = 0;
     while (i < (term.row - 1)) : (i += 1) {
         var j: usize = 0;
         while (j < (term.col - 1)) : (j += 1) {
-            if ((term.line[i][j].mode & attr) != 0) return true;
+            if (term.line[i][j].mode.get(attr)) return true;
         }
     }
     return false;
@@ -573,12 +574,12 @@ fn tsetdirt(top: u32, bot: u32) void {
         term.dirty[i] = true;
 }
 
-pub fn tsetdirtattr(attr: u32) void {
+pub fn tsetdirtattr(attr: Attr.Elem) void {
     var i: u32 = 0;
     while (i < (term.row - 1)) : (i += 1) {
         var j: u32 = 0;
         while (j < (term.col - 1)) : (j += 1) {
-            if ((term.line[i][j].mode & attr) != 0) {
+            if (term.line[i][j].mode.get(attr)) {
                 tsetdirt(i, i);
                 break;
             }
@@ -592,7 +593,7 @@ fn tfulldirt() void {
 
 var tcursor_c: [2]TCursor = undefined;
 fn tcursor(mode: CursorMovement) void {
-    var alt = @boolToInt(IS_SET(MODE_ALTSCREEN));
+    var alt = @boolToInt(term.mode.get(.Altscreen));
 
     if (mode == .Save) {
         tcursor_c[alt] = term.c;
@@ -605,7 +606,7 @@ fn tcursor(mode: CursorMovement) void {
 fn treset() void {
     term.c = .{
         .attr = .{
-            .mode = ATTR_NULL,
+            .mode = Attr.empty,
             .fg = cfg.defaultfg,
             .bg = cfg.defaultbg,
         },
@@ -619,7 +620,7 @@ fn treset() void {
     while (i < term.col) : (i += cfg.tabspaces) term.tabs[i] = 1;
     term.top = 0;
     term.bot = term.row - 1;
-    term.mode = MODE_WRAP | MODE_UTF8;
+    term.mode = TermMode.init_with(.{ .Wrap, .Utf8 });
     std.mem.set(Charset, term.trantbl[0..], Charset.Usa);
     term.charset = 0;
 
@@ -642,7 +643,7 @@ fn tswapscreen() void {
     const temp = term.line;
     term.line = term.alt;
     term.alt = temp;
-    term.mode ^= MODE_ALTSCREEN;
+    term.mode.toggle(.Altscreen);
     tfulldirt();
 }
 
@@ -712,7 +713,7 @@ fn tclearregion(x_start: u32, y_start: u32, x_end: u32, y_end: u32) void {
             if (selected(x, y)) selclear();
             gp.fg = term.c.attr.fg;
             gp.bg = term.c.attr.bg;
-            gp.mode = 0;
+            gp.mode = Attr.empty;
             gp.u = ' ';
         }
     }
@@ -784,7 +785,7 @@ fn tprinter(s: []const u8) void {
     }
 }
 pub fn toggleprinter(_: *const Arg) void {
-    term.mode ^= MODE_PRINT;
+    term.mode.toggle(.Print);
 }
 pub fn printscreen(_: *const Arg) void {
     tdump();
@@ -835,7 +836,7 @@ fn twrite(buf: []const u8, show_ctrl: bool) usize {
     var n: usize = 0;
     while (n < buf.len) : (n += charsize) {
         var u: Rune = undefined;
-        if (IS_SET(MODE_UTF8) and !IS_SET(MODE_SIXEL)) {
+        if (term.mode.get(.Utf8) and !term.mode.get(.Sixel)) {
             // process a complete utf8 char
             charsize = utf8decode(buf[n..], &u);
             if (charsize == 0) break;
@@ -949,9 +950,9 @@ pub fn draw() void {
     if (!main.xstartdraw()) return;
     term.ocx = limit(term.ocx, 0, term.col - 1);
     term.ocy = limit(term.ocx, 0, term.row - 1);
-    if (term.line[term.ocy][term.ocx].mode & ATTR_WDUMMY != 0)
+    if (term.line[term.ocy][term.ocx].mode.get(.WDummy))
         term.ocx -= 1;
-    if (term.line[term.c.y][cx].mode & ATTR_WDUMMY != 0)
+    if (term.line[term.c.y][cx].mode.get(.WDummy))
         cx -= 1;
     drawregion(0, 0, term.col, term.row);
     main.xdrawcursor(

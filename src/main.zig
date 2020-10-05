@@ -7,6 +7,7 @@ const cfg = @import("config.zig");
 const c = @import("c.zig");
 const st = @import("st.zig");
 
+const Bitset = @import("util.zig").Bitset;
 const Glyph = st.Glyph;
 
 pub const Shortcut = struct {
@@ -53,25 +54,27 @@ const die = st.die;
 const XEMBED_FOCUS_IN = 4;
 const XEMBED_FOCUS_OUT = 4;
 
-const MODE_VISIBLE: u32 = 1 << 0;
-const MODE_FOCUSED: u32 = 1 << 1;
-const MODE_APPKEYPAD: u32 = 1 << 2;
-const MODE_MOUSEBTN: u32 = 1 << 3;
-const MODE_MOUSEMOTION: u32 = 1 << 4;
-const MODE_REVERSE: u32 = 1 << 5;
-const MODE_KBDLOCK: u32 = 1 << 6;
-const MODE_HIDE: u32 = 1 << 7;
-const MODE_APPCURSOR: u32 = 1 << 8;
-const MODE_MOUSESGR: u32 = 1 << 9;
-const MODE_8BIT: u32 = 1 << 10;
-const MODE_BLINK: u32 = 1 << 11;
-const MODE_FBLINK: u32 = 1 << 12;
-const MODE_FOCUS: u32 = 1 << 13;
-const MODE_MOUSEX10: u32 = 1 << 14;
-const MODE_MOUSEMANY: u32 = 1 << 15;
-const MODE_BRCKTPASTE: u32 = 1 << 16;
-const MODE_NUMLOCK: u32 = 1 << 17;
-const MODE_MOUSE = MODE_MOUSEBTN | MODE_MOUSEMOTION | MODE_MOUSEX10 | MODE_MOUSEMANY;
+const WindowMode = Bitset(enum {
+    Visible,
+    Focused,
+    AppKeypad,
+    MouseButton,
+    MouseMotion,
+    Reverse,
+    KeyboardLock,
+    Hide,
+    AppCursor,
+    MouseSGR,
+    @"8Bit",
+    Blink,
+    FBlink,
+    Focus,
+    MouseX10,
+    MouseMany,
+    BrcktPaste,
+    Numlock,
+});
+const winmode_mouse = &WindowMode.init_with(.{ .MouseButton, .MouseMotion, .MouseX10, .MouseMany });
 // Purely graphic info
 const TermWindow = struct {
     /// tty width and height
@@ -85,7 +88,7 @@ const TermWindow = struct {
     /// char width
     cw: u32,
     /// window state/mode flags
-    mode: u32,
+    mode: WindowMode,
     /// cursor style
     cursor: u32 = cursorshape,
 };
@@ -228,7 +231,7 @@ pub fn selpaste(_: *const Arg) void {
     );
 }
 pub fn numlock(_: *const Arg) void {
-    win.mode ^= MODE_NUMLOCK;
+    win.mode.toggle(.Numlock);
 }
 pub fn zoom(arg: *const Arg) void {
     const larg = Arg{ .f = usedfontsize + arg.f };
@@ -266,7 +269,7 @@ fn mousereport(e: *c.XEvent) void {}
 fn bpress(e: *c.XEvent) void {
     var now: c.struct_timespec = undefined;
     var snap: st.SelectionSnap = undefined;
-    if (win.mode & MODE_MOUSE != 0 and e.xbutton.state & cfg.forceselmod == 0) {
+    if (win.mode.any(winmode_mouse) and e.xbutton.state & cfg.forceselmod == 0) {
         mousereport(e);
         return;
     }
@@ -362,10 +365,10 @@ fn selnotify(e: *c.XEvent) void {
                 ch.* = '\r';
         }
 
-        if (st.IS_SET(MODE_BRCKTPASTE) and ofs == 0)
+        if (win.mode.get(.BrcktPaste) and ofs == 0)
             st.ttywrite("\x1b[200~", false);
         st.ttywrite(data[0 .. nitems * @intCast(usize, format) / 8], true);
-        if (st.IS_SET(MODE_BRCKTPASTE) and rem == 0)
+        if (win.mode.get(.BrcktPaste) and rem == 0)
             st.ttywrite("\x1b[201~", false);
         _ = c.XFree(data);
 
@@ -458,7 +461,7 @@ fn xsetsel(str: [*:0]const u8) void {
     setsel(str, c.CurrentTime);
 }
 fn brelease(e: *c.XEvent) void {
-    if (st.IS_SET(MODE_MOUSE) and e.xbutton.state & cfg.forceselmod == 0) {
+    if (win.mode.any(winmode_mouse) and e.xbutton.state & cfg.forceselmod == 0) {
         mousereport(e);
         return;
     }
@@ -469,7 +472,7 @@ fn brelease(e: *c.XEvent) void {
         mousesel(e, 1);
 }
 fn bmotion(e: *c.XEvent) void {
-    if (st.IS_SET(MODE_MOUSE) and e.xbutton.state & cfg.forceselmod == 0) {
+    if (win.mode.any(winmode_mouse) and e.xbutton.state & cfg.forceselmod == 0) {
         mousereport(e);
         return;
     }
@@ -565,7 +568,7 @@ fn xsetcolorname(x: u32, name: []const u8) u32 {
 fn xclear(x1: u32, y1: u32, x2: u32, y2: u32) void {
     c.XftDrawRect(
         xw.draw,
-        &dc.col[if (st.IS_SET(MODE_REVERSE)) cfg.defaultfg else cfg.defaultbg],
+        &dc.col[if (win.mode.get(.Reverse)) cfg.defaultfg else cfg.defaultbg],
         @intCast(c_int, x1),
         @intCast(c_int, y1),
         x2 - x1,
@@ -856,7 +859,7 @@ fn xinit(cols: u32, rows: u32) void {
     var thispid = c.getpid();
     _ = c.XChangeProperty(xw.dpy, xw.win, xw.netwmpid, c.XA_CARDINAL, 32, c.PropModeReplace, @ptrCast(*u8, &thispid), 1);
 
-    win.mode = MODE_NUMLOCK;
+    win.mode = WindowMode.init_with(.{.Numlock});
     resettitle();
     _ = c.XMapWindow(xw.dpy, xw.win);
     xhints();
@@ -906,7 +909,7 @@ fn xsettitle(p: ?[*:0]const u8) void {
     _ = c.XFree(@ptrCast(?*c_void, prop.value));
 }
 pub fn xstartdraw() bool {
-    return st.IS_SET(MODE_VISIBLE);
+    return win.mode.get(.Visible);
 }
 pub fn xdrawline(line: st.Line, x1: u32, y1: u32, x2: u32) void {
     var specs = xw.specbuf;
@@ -917,9 +920,9 @@ pub fn xdrawline(line: st.Line, x1: u32, y1: u32, x2: u32) void {
     var x = x1;
     while (x < x2 and i < numspecs) : (x += 1) {
         var new = line[x];
-        if (new.mode == st.ATTR_WDUMMY) continue;
+        if (new.mode.bits == st.Attr.singleton(.WDummy).bits) continue;
         if (st.selected(x, y1))
-            new.mode ^= st.ATTR_REVERSE;
+            new.mode.toggle(.Reverse);
         if (i > 0 and st.ATTRCMP(base, new)) {
             xdrawglyphdfontspecs(specs, base, i, ox, y1);
             specs += i;
@@ -951,7 +954,7 @@ pub fn xfinishdraw() void {
     _ = c.XSetForeground(
         xw.dpy,
         dc.gc,
-        dc.col[if (st.IS_SET(MODE_REVERSE)) cfg.defaultfg else cfg.defaultbg].pixel,
+        dc.col[if (win.mode.get(.Reverse)) cfg.defaultfg else cfg.defaultbg].pixel,
     );
 }
 pub fn xximspot(x: u32, y: u32) void {
@@ -969,19 +972,19 @@ fn expose(ev: *c.XEvent) void {
 }
 fn visibility(ev: *c.XEvent) void {
     var e = &ev.xvisibility;
-    st.MODBIT(&win.mode, e.state != c.VisibilityFullyObscured, MODE_VISIBLE);
+    win.mode.set(.Visible, e.state != c.VisibilityFullyObscured);
 }
 fn unmap(ev: *c.XEvent) void {
-    win.mode &= ~MODE_VISIBLE;
+    win.mode.set(.Visible, false);
 }
 fn xsetpointermotion(set: bool) void {
     st.MODBIT(xw.attrs.event_mask, set, c.PointerMotionMask);
     _ = c.XChangeWindowAttributes(xw.dpy, xw.win, c.CWEventMask, &xw.attrs);
 }
-fn xsetmode(set: bool, flags: u32) void {
+fn xsetmode(set: bool, flags: WindowMode) void {
     const old_mode = win.mode;
-    st.MODBIT(win.mode, set, flags);
-    if ((win.mode & MODE_REVERSE) != (old_mode & MODE_REVERSE))
+    win.mode.setAll(flags, set);
+    if (win.mode.get(.Reverse) != old_mode.get(.Reverse))
         redraw();
 }
 fn xsetcursor(cursor: u32) bool {
@@ -998,7 +1001,7 @@ fn xseturgency(add: bool) void {
     _ = c.XFree(h);
 }
 fn xbell() void {
-    if (!st.IS_SET(MODE_FOCUSED))
+    if (!win.mode.get(.Focused))
         xseturgency(true);
     if (cfg.bellvolume != 0)
         _ = c.XkbBell(xw.dpy, xw.win, cfg.bellvolume, @as(c.Atom, null));
@@ -1008,14 +1011,14 @@ fn focus(ev: *c.XEvent) void {
     if (e.mode == c.NotifyGrab) return;
     if (ev.@"type" == c.FocusIn) {
         c.XSetICFocus(xw.xic);
-        win.mode |= MODE_FOCUSED;
+        win.mode.set(.Focused, true);
         xseturgency(false);
-        if (win.mode & MODE_FOCUS != 0)
+        if (win.mode.get(.Focus))
             st.ttywrite("\x1b[I", false);
     } else {
         c.XUnsetICFocus(xw.xic);
-        win.mode &= ~MODE_FOCUSED;
-        if (win.mode & MODE_FOCUS != 0)
+        win.mode.set(.Focused, false);
+        if (win.mode.get(.Focus))
             st.ttywrite("\x1b[O", false);
     }
 }
@@ -1037,12 +1040,12 @@ fn kmap(k: c.KeySym, state: u32) ?[*:0]const u8 {
         if (!match(kp.mask, state))
             continue;
 
-        if (if (st.IS_SET(MODE_APPKEYPAD)) kp.appkey < 0 else kp.appkey > 0)
+        if (if (win.mode.get(.AppKeypad)) kp.appkey < 0 else kp.appkey > 0)
             continue;
-        if (st.IS_SET(MODE_NUMLOCK) and kp.appkey == 2)
+        if (win.mode.get(.Numlock) and kp.appkey == 2)
             continue;
 
-        if (if (st.IS_SET(MODE_APPCURSOR)) kp.appcursor < 0 else kp.appcursor > 0)
+        if (if (win.mode.get(.AppCursor)) kp.appcursor < 0 else kp.appcursor > 0)
             continue;
 
         return kp.s;
@@ -1056,7 +1059,7 @@ fn kpress(ev: *c.XEvent) void {
     var buf: [32]u8 = undefined;
     var status: c_int = undefined;
 
-    if ((win.mode & (MODE_KBDLOCK)) != 0) return;
+    if (win.mode.get(.KeyboardLock)) return;
 
     var len = @intCast(usize, c.XmbLookupString(xw.xic, e, &buf, @sizeOf([32]u8), &ksym, &status));
     // 1. shortcuts
@@ -1076,7 +1079,7 @@ fn kpress(ev: *c.XEvent) void {
     // 3. composed string from input method
     if (len == 0) return;
     if (len == 1 and e.state & c.Mod1Mask != 0) {
-        if (win.mode & MODE_8BIT != 0) {
+        if (win.mode.get(.@"8Bit")) {
             if (buf[0] < 127) {
                 var ch: st.Rune = buf[0] | 0x80;
                 len = st.utf8encode(ch, @ptrCast([*:0]u8, &buf));
@@ -1094,10 +1097,10 @@ fn cmessage(e: *c.XEvent) void {
     //  http://standards.freedesktop.org/xembed-spec/xembed-spec-latest.html
     if (e.xclient.message_type == xw.xembed and e.xclient.format == 32) {
         if (e.xclient.data.l[1] == XEMBED_FOCUS_IN) {
-            win.mode |= MODE_FOCUSED;
+            win.mode.set(.Focused, true);
             xseturgency(false);
         } else if (e.xclient.data.l[1] == XEMBED_FOCUS_OUT) {
-            win.mode &= ~MODE_FOCUSED;
+            win.mode.set(.Focused, false);
         }
     } else if (e.xclient.data.l[0] == xw.wmdeletewin) {
         st.ttyhangup();
@@ -1151,8 +1154,8 @@ fn run() void {
         if (c._FD_ISSET(ttyfd, &rfd)) {
             _ = st.ttyread();
             if (cfg.blinktimeout != 0) {
-                blinkset = st.tattrset(st.ATTR_BLINK);
-                if (blinkset) st.MODBIT(&win.mode, false, MODE_BLINK);
+                blinkset = st.tattrset(.Blink);
+                if (blinkset) win.mode.set(.Blink, false);
             }
         }
 
@@ -1169,8 +1172,8 @@ fn run() void {
 
         var dodraw = false;
         if (cfg.blinktimeout != 0 and st.TIMEDIFF(now, lastblink) > cfg.blinktimeout) {
-            st.tsetdirtattr(st.ATTR_BLINK);
-            win.mode ^= MODE_BLINK;
+            st.tsetdirtattr(.Blink);
+            win.mode.toggle(.Blink);
             lastblink = now;
             dodraw = true;
         }
