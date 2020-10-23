@@ -121,6 +121,7 @@ const TCursor = struct {
 
 const Selection = struct {
     const Coords = struct { x: u32 = 0, y: u32 = 0 };
+    pub const no_sel = std.math.maxInt(u32);
 
     mode: SelectionMode,
     @"type": SelectionType,
@@ -130,6 +131,7 @@ const Selection = struct {
     /// normalized end
     ne: Coords,
     /// original begin
+    /// ob.x is set to `no_sel` (`maxInt(u32)`) if there's no selection
     ob: Coords,
     /// original end
     oe: Coords,
@@ -156,7 +158,7 @@ const Term = struct {
 };
 
 /// CSI Escape sequence structs
-/// ESC '[' [[ [<priv>] <arg> [;]] <mode> [<mode>]]
+/// `ESC '[' [[ [<priv>] <arg> [;]] <mode> [<mode>]]`
 const CSIEscape = struct {
     buf: [esc_buf_size]u8,
     len: usize,
@@ -167,7 +169,7 @@ const CSIEscape = struct {
 };
 
 /// STR Escape sequence structs
-/// ESC type [[ [<priv>] <arg> [;]] <mode>] ESC '\'
+/// `ESC type [[ [<priv>] <arg> [;]] <mode>] ESC '\'`
 const STREscape = struct {
     @"type": u8,
     buf: [str_buf_siz]u8,
@@ -247,7 +249,7 @@ fn utf8decodebyte(ch: u8, i: *usize) Rune {
     }
     return 0;
 }
-pub fn utf8encode(uni: Rune, ch: [*:0]u8) usize {
+pub fn utf8encode(uni: Rune, ch: [*]u8) usize {
     var u = uni;
     const len = utf8validate(&u, 0);
     if (len > utf_size)
@@ -282,7 +284,7 @@ fn base64dec(src: [*:0]const u8) [*:0]u8 {
 pub fn selinit() void {
     sel.mode = .Idle;
     sel.snap = .None;
-    sel.ob.x = std.math.maxInt(u32);
+    sel.ob.x = Selection.no_sel;
 }
 
 fn tlinelen(y: u32) u32 {
@@ -355,7 +357,7 @@ fn selnormalize() void {
         sel.ne.x = term.col - 1;
 }
 pub fn selected(x: u32, y: u32) bool {
-    if (sel.mode == .Empty or sel.ob.x == std.math.maxInt(u32) or sel.alt != term.mode.get(.Altscreen))
+    if (sel.mode == .Empty or sel.ob.x == Selection.no_sel or sel.alt != term.mode.get(.Altscreen))
         return false;
 
     if (sel.@"type" == .Rectangular)
@@ -369,13 +371,64 @@ pub fn selected(x: u32, y: u32) bool {
 fn selsnap(x: *u32, y: *u32, direction: i2) void {
     @compileError("TODO selsnap");
 }
+/// caller owns returned memory
 pub fn getsel() ?[*:0]u8 {
-    @compileError("TODO getsel");
+    if (sel.ob.x == Selection.no_sel)
+        return null;
+
+    const bufsize = (term.col + 1) * (sel.ne.y - sel.nb.y + 1) * utf_size;
+    const str = @ptrCast([*]u8, xmalloc(bufsize));
+    var ptr = str;
+
+    // append every set & selected glyph to the selection
+    var y = sel.nb.y;
+    while (y <= sel.ne.y) : (y += 1) {
+        const linelen = tlinelen(y);
+        if (linelen == 0) {
+            ptr.* = '\n';
+            ptr += 1;
+            continue;
+        }
+
+        var gp: [*]Glyph = undefined;
+        var lastx: u32 = undefined;
+        if (sel.@"type" == .Rectangular) {
+            gp = term.line[y] + sel.nb.x;
+            lastx = sel.ne.x;
+        } else {
+            gp = term.line[y] + (if (sel.nb.y == y) sel.nb.x else 0);
+            lastx = if (sel.ne.y == y) sel.ne.x else term.col - 1;
+        }
+        var last: [*]Glyph = term.line[y] + std.math.min(lastx, linelen - 1);
+        while (@ptrToInt(last) >= @ptrToInt(gp) and last.*.u == ' ')
+            last -= 1;
+
+        while (@ptrToInt(gp) <= @ptrToInt(last)) : (gp += 1) {
+            if (gp.*.mode.get(.WDummy))
+                continue;
+
+            ptr += utf8encode(gp.*.u, ptr);
+        }
+
+        // Copy and pasting of line endings is inconsistent
+        // in the inconsistent terminal and GUI world.
+        // The best solution seems like to produce '\n' when
+        // something is copied from st and convert '\n' to
+        // '\r', when something to be pasted is received by
+        // st.
+        // FIXME: Fix the computer world.
+        if ((y < sel.ne.y or lastx >= linelen) and !last.*.mode.get(.Wrap)) {
+            ptr.* = '\n';
+            ptr += 1;
+        }
+    }
+    ptr.* = 0;
+    return @ptrCast([*:0]u8, str);
 }
 pub fn selclear() void {
-    if (sel.ob.x == std.math.maxInt(u32)) return;
+    if (sel.ob.x == Selection.no_sel) return;
     sel.mode = .Idle;
-    sel.ob.x = std.math.maxInt(u32);
+    sel.ob.x = Selection.no_sel;
     tsetdirt(sel.nb.y, sel.ne.y);
 }
 
@@ -690,8 +743,20 @@ fn tswapscreen() void {
     tfulldirt();
 }
 
-fn tscrolldown(orig: u32, n: u32) void {
-    @compileError("TODO tscrolldown");
+fn tscrolldown(orig: u32, nlines: u32) void {
+    const n = limit(nlines, 0, term.bot - orig + 1);
+
+    tsetdirt(orig, term.bot - n);
+    tclearregion(0, term.bot - n + 1, term.col - 1, term.bot);
+
+    var i = term.bot;
+    while (i >= orig + n) : (i -= 1) {
+        const temp = term.line[i];
+        term.line[i] = term.line[i - n];
+        term.line[i - n] = temp;
+    }
+
+    selscroll(orig, n);
 }
 fn tscrollup(orig: u32, n: u32) void {
     @compileError("TODO tscrollup");
