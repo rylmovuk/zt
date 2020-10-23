@@ -35,7 +35,7 @@ pub const Attr = Bitset(enum {
 });
 
 const SelectionMode = enum { Idle, Empty, Ready };
-const SelectionType = enum(u2) { Regular = 1, Rectangular = 2 };
+pub const SelectionType = enum(u2) { Regular = 1, Rectangular = 2 };
 pub const SelectionSnap = enum(u2) { None = 0, SnapWord = 1, SnapLine = 2 };
 pub const Rune = u32;
 
@@ -125,9 +125,13 @@ const Selection = struct {
     mode: SelectionMode,
     @"type": SelectionType,
     snap: SelectionSnap,
+    /// normalized begin
     nb: Coords,
+    /// normalized end
     ne: Coords,
+    /// original begin
     ob: Coords,
+    /// original end
     oe: Coords,
     alt: bool,
 };
@@ -306,11 +310,49 @@ pub fn selstart(col: u32, row: u32, snap: SelectionSnap) void {
     if (sel.snap != .None) sel.mode = .Ready;
     tsetdirt(sel.nb.y, sel.ne.y);
 }
-fn selextend(col: u32, row: u32, type: SelectionType, done: bool) void {
-    @compileError("TODO selextend");
+pub fn selextend(col: u32, row: u32, typ: SelectionType, done: bool) void {
+    if (sel.mode == .Idle) return;
+    if (done and sel.mode == .Empty) {
+        selclear();
+        return;
+    }
+
+    const oldey = sel.oe.y;
+    const oldex = sel.oe.x;
+    const oldsby = sel.nb.y;
+    const oldsey = sel.ne.y;
+    const oldtype = sel.@"type";
+
+    sel.oe.x = col;
+    sel.oe.y = row;
+    selnormalize();
+    sel.@"type" = typ;
+
+    if (oldey != sel.oe.y or oldex != sel.oe.x or oldtype != sel.@"type" or sel.mode == .Empty)
+        tsetdirt(std.math.min(sel.nb.y, oldsby), std.math.max(sel.ne.y, oldsey));
+
+    sel.mode = if (done) .Idle else .Ready;
 }
 fn selnormalize() void {
-    @compileError("TODO selnormalize");
+    if (sel.@"type" == .Regular and sel.ob.y != sel.oe.y) {
+        sel.nb.x = if (sel.ob.y < sel.oe.y) sel.ob.x else sel.oe.x;
+        sel.ne.x = if (sel.ob.y < sel.oe.y) sel.oe.x else sel.ob.x;
+    } else {
+        sel.nb.x = std.math.min(sel.ob.x, sel.oe.x);
+        sel.ne.x = std.math.max(sel.ob.x, sel.oe.x);
+    }
+
+    selsnap(&sel.nb.x, &sel.nb.y, -1);
+    selsnap(&sel.ne.x, &sel.ne.y, 1);
+
+    // expand selection over line breaks
+    if (sel.@"type" == .Rectangular)
+        return;
+    const i = tlinelen(sel.nb.y);
+    if (i < sel.nb.x)
+        sel.nb.x = i;
+    if (tlinelen(sel.ne.y) <= sel.ne.x)
+        sel.ne.x = term.col - 1;
 }
 pub fn selected(x: u32, y: u32) bool {
     if (sel.mode == .Empty or sel.ob.x == std.math.maxInt(u32) or sel.alt != term.mode.get(.Altscreen))
@@ -323,13 +365,14 @@ pub fn selected(x: u32, y: u32) bool {
         and (y != sel.nb.y or x >= sel.nb.x) //
         and (y != sel.ne.y or x <= sel.ne.x);
 }
-fn selsnap(x: *u32, y: *u32, direction: u32) void {
+/// direction must be either +1 or -1
+fn selsnap(x: *u32, y: *u32, direction: i2) void {
     @compileError("TODO selsnap");
 }
-fn getsel() ?[*:0]u8 {
+pub fn getsel() ?[*:0]u8 {
     @compileError("TODO getsel");
 }
-fn selclear() void {
+pub fn selclear() void {
     if (sel.ob.x == std.math.maxInt(u32)) return;
     sel.mode = .Idle;
     sel.ob.x = std.math.maxInt(u32);

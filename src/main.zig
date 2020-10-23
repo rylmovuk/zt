@@ -263,9 +263,86 @@ fn evrow(e: *c.XEvent) u32 {
 }
 
 fn mousesel(e: *c.XEvent, done: c_int) void {
-    @compileError("TODO mousesel");
+    const state = e.xbutton.state & ~@as(c_uint, c.Button1Mask | cfg.forceselmod);
+
+    const seltype = for (cfg.selmasks[1..]) |mask, typ| {
+        if (match(mask, state)) {
+            break @intToEnum(st.SelectionType, @intCast(u2, typ));
+        }
+    } else st.SelectionType.Regular;
+    st.selextend(evcol(e), evrow(e), seltype, done != 0);
+    if (done != 0)
+        setsel(st.getsel(), e.xbutton.time);
 }
-fn mousereport(e: *c.XEvent) void {}
+var mousereport_ox: u32 = 0;
+var mousereport_oy: u32 = 0;
+var oldbutton: u32 = 3; // button event on startup: 3 = release
+fn mousereport(e: *c.XEvent) void {
+    const x = evcol(e);
+    const y = evcol(e);
+    var button = e.xbutton.button;
+
+    // from urxvt
+    if (e.xbutton.@"type" == c.MotionNotify) {
+        if (x == mousereport_ox and y == mousereport_oy)
+            return;
+        if (!win.mode.get(.MouseMotion) and !win.mode.get(.MouseMany))
+            return;
+        // MOUSE_MOTION: no reporting if no button is pressed
+        if (win.mode.get(.MouseMotion) and oldbutton == 3)
+            return;
+
+        button = oldbutton + 32;
+        mousereport_ox = x;
+        mousereport_oy = y;
+    } else {
+        if (!win.mode.get(.MouseSGR) and e.xbutton.@"type" == c.ButtonRelease) {
+            button = 3;
+        } else {
+            button -= c.Button1;
+            if (button >= 3)
+                button += 64 - 3;
+        }
+        if (e.xbutton.@"type" == c.ButtonPress) {
+            oldbutton = button;
+            mousereport_ox = x;
+            mousereport_oy = y;
+        } else if (e.xbutton.@"type" == c.ButtonRelease) {
+            oldbutton = 3;
+            // WindowMode.MouseX10: no button release reporting
+            if (win.mode.get(.MouseX10))
+                return;
+            if (button == 64 or button == 65)
+                return;
+        }
+    }
+
+    const state = e.xbutton.state;
+    if (!win.mode.get(.MouseX10)) {
+        button += @as(c_uint, if (state & c.ShiftMask != 0) 4 else 0) //
+            + @as(c_uint, if (state & c.Mod4Mask != 0) 8 else 0) //
+            + @as(c_uint, if (state & c.ControlMask != 0) 16 else 0);
+    }
+
+    var buf: [40]u8 = undefined;
+    const esc_str = if (win.mode.get(.MouseSGR))
+        std.fmt.bufPrint(&buf, "\x1b[<{};{};{}{c}", .{
+            button,
+            x + 1,
+            y + 1,
+            @as(u8, if (e.xbutton.@"type" == c.ButtonRelease) 'm' else 'M'),
+        }) catch unreachable
+    else if (x < 223 and y < 223)
+        std.fmt.bufPrint(&buf, "\x1b[m{c}{c}{c}", .{
+            @intCast(u8, 32 + button),
+            @intCast(u8, 32 + x + 1),
+            @intCast(u8, 32 + y + 1),
+        }) catch unreachable
+    else
+        return;
+
+    st.ttywrite(esc_str, false);
+}
 fn bpress(e: *c.XEvent) void {
     var now: c.struct_timespec = undefined;
     var snap: st.SelectionSnap = undefined;
@@ -449,7 +526,8 @@ fn selrequest(e: *c.XEvent) void {
         _ = c.fprintf(c.stderr, "Error sending SelectionNotify event\n");
 }
 
-fn setsel(str: [*:0]const u8, t: Time) void {
+/// transfers ownership of `str`
+fn setsel(str: ?[*:0]u8, t: c.Time) void {
     c.free(xsel.primary);
     xsel.primary = str;
 
