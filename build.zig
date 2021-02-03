@@ -15,15 +15,20 @@ pub fn build(b: *Builder) void {
 
     const cflags = &[_][]const u8{ "-DVERSION=\"" ++ version ++ "\"", "-D_XOPEN_SOURCE=600" };
 
+    const zig_code = b.addObject("st", "src/st.zig");
+    zig_code.setTarget(target);
+    zig_code.setBuildMode(mode);
+    zig_code.linkLibC();
+
     const exe = b.addExecutable("st", null);
 
     exe.setTarget(target);
     exe.setBuildMode(mode);
 
+    exe.addObject(zig_code);
     exe.addCSourceFile("src/st.c", cflags);
     exe.addCSourceFile("src/x.c", cflags);
 
-    exe.linkLibC();
     const libraries = &[_][]const u8{ "m", "rt", "X11", "util", "Xft", "fontconfig", "freetype" };
     for (libraries) |lib| exe.linkSystemLibrary(lib);
 
