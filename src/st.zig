@@ -128,10 +128,6 @@ const Escape = Bitset(enum {
     DCS,
 });
 
-// Globals
-var iofd: os.fd_t = os.STDOUT_FILENO;
-var pid: os.pid_t = undefined;
-
 const utfbyte = [utf_size + 1]u8{ 0x80, 0, 0xC0, 0xE0, 0xF0 };
 const utfmask = [utf_size + 1]u8{ 0xC0, 0x80, 0xE0, 0xF0, 0xF8 };
 const utfmin = [utf_size + 1]Rune{ 0, 0, 0x80, 0x800, 0x10000 };
