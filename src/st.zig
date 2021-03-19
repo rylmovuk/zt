@@ -17,9 +17,9 @@ pub inline fn ATTRCMP(a: Glyph, b: Glyph) bool {
 pub inline fn MODBIT(x: anytype, set: bool, bit: @typeInfo(@TypeOf(x)).Pointer.child) void {
     if (set) x.* |= bit else x.* &= ~bit;
 }
-pub inline fn TIMEDIFF(t1: c.struct_timespec, t2: c.struct_timespec) c_long {
-    return (t1.tv_sec - t2.tv_sec) * 1000 + @divTrunc(t1.tv_nsec - t2.tv_nsec, 1_000_000);
-}
+// pub inline fn TIMEDIFF(t1: c.struct_timespec, t2: c.struct_timespec) c_long {
+//     return (t1.tv_sec - t2.tv_sec) * 1000 + @divTrunc(t1.tv_nsec - t2.tv_nsec, 1_000_000);
+// }
 pub inline fn TRUECOLOR(r: u32, g: u32, b: u32) u32 {
     return 1 << 24 | r << 16 | g << 8 | b;
 }
@@ -46,7 +46,7 @@ pub const Rune = u32;
 
 pub const Glyph = extern struct {
     u: Rune = 0,
-    mode: u32 = Attr.empty.bits,
+    mode: u16 = Attr.empty.bits,
     fg: u32,
     bg: u32,
 };
@@ -144,19 +144,19 @@ const Selection = struct {
 
     pub const no_sel = std.math.maxInt(u32);
 
-    mode: SelectionMode = undefined,
-    @"type": SelectionType = undefined,
-    snap_kind: SelectionSnap = undefined,
+    mode: SelectionMode = .Idle,
+    @"type": SelectionType = .None,
+    snap_kind: SelectionSnap = .None,
     /// normalized begin
-    nb: Coords = undefined,
+    nb: Coords = .{},
     /// normalized end
-    ne: Coords = undefined,
+    ne: Coords = .{},
     /// original begin
     /// ob.x is set to `no_sel` (`maxInt(u32)`) if there's no selection
-    ob: Coords = undefined,
+    ob: Coords = .{},
     /// original end
-    oe: Coords = undefined,
-    alt: bool = undefined,
+    oe: Coords = .{},
+    alt: bool = false,
 
     export fn selinit() void {
         sel.init();
@@ -2033,7 +2033,7 @@ export fn draw() void {
     var cx = term.cur.x;
     if (!main.xstartdraw()) return;
     term.ocx = limit(term.ocx, 0, term.col - 1);
-    term.ocy = limit(term.ocx, 0, term.row - 1);
+    term.ocy = limit(term.ocy, 0, term.row - 1);
     if (as_attr(term.line[term.ocy][term.ocx].mode).get(.WDummy))
         term.ocx -= 1;
     if (as_attr(term.line[term.cur.y][cx].mode).get(.WDummy))
