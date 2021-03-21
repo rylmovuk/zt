@@ -29,7 +29,7 @@ pub fn build(b: *Builder) void {
     exe.addCSourceFile("src/st.c", cflags);
     exe.addCSourceFile("src/x.c", cflags);
 
-    const libraries = &[_][]const u8{ "m", "rt", "X11", "util", "Xft", "fontconfig", "freetype" };
+    const libraries = &[_][]const u8{ "rt", "X11", "util", "Xft", "fontconfig", "freetype" };
     for (libraries) |lib| exe.linkSystemLibrary(lib);
 
     exe.install();
