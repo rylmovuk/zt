@@ -1,5 +1,6 @@
 const std = @import("std");
 const os = std.os;
+const mem = std.mem;
 const c = @import("c.zig");
 const main = @import("main.zig");
 const cfg = @import("config.zig");
@@ -95,9 +96,8 @@ inline fn ISDELIM(u: Rune) bool {
 const external = struct {
     pub extern fn xmalloc(len: usize) *c_void;
     pub extern fn xrealloc(p: ?*c_void, len: usize) *c_void;
-    pub extern fn ttywrite(s: [*]const u8, n: usize, may_echo: c_int) void;
-    pub extern fn tprinter(s_ptr: [*]const u8, s_len: usize) void;
     pub extern fn resettitle() void;
+    pub extern fn ttywriteraw(cmdfd: c_int, s: [*]const u8, n: usize) void;
 };
 
 const TermMode = Bitset(enum {
@@ -472,8 +472,8 @@ const Terminal = struct {
         }
         // ensure that both src and dst are not null
         if (i > 0) {
-            std.mem.copy(Line, self.line[0..self.row], self.line[i .. i + new_rows]);
-            std.mem.copy(Line, self.alt[0..self.row], self.alt[i .. i + new_rows]);
+            mem.copy(Line, self.line[0..self.row], self.line[i .. i + new_rows]);
+            mem.copy(Line, self.alt[0..self.row], self.alt[i .. i + new_rows]);
         }
         i += new_rows;
         while (i < self.row) : (i += 1) {
@@ -501,7 +501,7 @@ const Terminal = struct {
         if (new_cols > self.col) {
             var bp = self.tabs + self.col;
 
-            std.mem.set(u32, bp[0..(new_cols - self.col)], 0);
+            mem.set(u32, bp[0..(new_cols - self.col)], 0);
             bp -= 1;
             while (@ptrToInt(bp) > @ptrToInt(self.tabs) and bp[0] != 0) bp -= 1;
             bp += cfg.tabspaces;
@@ -770,13 +770,13 @@ const Terminal = struct {
             .state = CURSOR_DEFAULT,
         };
 
-        std.mem.set(u32, self.tabs[0..self.col], 0);
+        mem.set(u32, self.tabs[0..self.col], 0);
         var i: u32 = cfg.tabspaces;
         while (i < self.col) : (i += cfg.tabspaces) self.tabs[i] = 1;
         self.top = 0;
         self.bot = self.row - 1;
         self.mode = TermMode.init_with(.{ .Wrap, .Utf8 });
-        std.mem.set(Charset, self.trantbl[0..], Charset.Usa);
+        mem.set(Charset, self.trantbl[0..], Charset.Usa);
         self.charset = 0;
 
         i = 0;
@@ -832,7 +832,7 @@ const Terminal = struct {
     }
     fn dumpSelection(self: *Terminal) void {
         if (sel.getSelected()) |ptr| {
-            printer(std.mem.span(ptr));
+            printer(mem.span(ptr));
             std.c.free(ptr);
         }
     }
@@ -1025,7 +1025,7 @@ const Terminal = struct {
             // SGCI: TODO
             0x99 => {},
             // DECID -- Identify Terminal
-            0x9a => ttywrite(cfg.vtiden, false),
+            0x9a => xttywrite(cfg.vtiden, false),
             // CSI: TODO
             0x9b => {},
             // ST: TODO
@@ -1095,7 +1095,7 @@ const Terminal = struct {
                 self.moveTo(self.cur.x, self.cur.y - 1);
             },
             // DECID -- Identify Terminal
-            'Z' => ttywrite(cfg.vtiden, false),
+            'Z' => xttywrite(cfg.vtiden, false),
             // RIS -- Reset to initial state
             'c' => {
                 self.reset();
@@ -1135,7 +1135,7 @@ const Terminal = struct {
             const wcw = c.wcwidth(@intCast(c_int, u));
             if (!control) {
                 width = if (wcw != -1) @intCast(u32, wcw) else blk: {
-                    std.mem.copy(u8, &s, &[4]u8{ 0xef, 0xbf, 0xbd, 0 }); // utf_invalid
+                    mem.copy(u8, &s, &[4]u8{ 0xef, 0xbf, 0xbd, 0 }); // utf_invalid
                     break :blk 1;
                 };
             }
@@ -1182,7 +1182,7 @@ const Terminal = struct {
                     return;
                 }
 
-                std.mem.copy(u8, strescseq.buf[strescseq.len..], &s);
+                mem.copy(u8, strescseq.buf[strescseq.len..], &s);
                 strescseq.len += @intCast(u32, len);
                 return;
             }
@@ -1232,7 +1232,7 @@ const Terminal = struct {
         }
 
         if (self.mode.get(.Insert) and self.cur.x + width < self.col)
-            std.mem.copy(Glyph, gp[width .. self.col - self.cur.x], gp[0 .. self.col - self.cur.x - width]);
+            mem.copy(Glyph, gp[width .. self.col - self.cur.x], gp[0 .. self.col - self.cur.x - width]);
 
         if (self.cur.x + width > self.col) {
             term.newLine(true);
@@ -1345,7 +1345,7 @@ const Terminal = struct {
         const size = self.col - src;
         const line = self.line[self.cur.y];
 
-        std.mem.copy(Glyph, line[dst..size], line[src..size]);
+        mem.copy(Glyph, line[dst..size], line[src..size]);
         self.clearRegion(self.col - n, self.cur.y, self.col - 1, self.cur.y);
     }
 
@@ -1357,7 +1357,7 @@ const Terminal = struct {
         const size = self.col - dst;
         const line = self.line[self.cur.y];
 
-        std.mem.copy(Glyph, line[dst..size], line[src..size]);
+        mem.copy(Glyph, line[dst..size], line[src..size]);
         self.clearRegion(src, self.cur.y, dst - 1, self.cur.y);
     }
 
@@ -1481,7 +1481,7 @@ const Terminal = struct {
     }
 
     fn printer(s: []const u8) void {
-        external.tprinter(s.ptr, s.len);
+        tprinter(s.ptr, s.len);
     }
 
     export fn tisset(flag: c_int) c_int {
@@ -1572,7 +1572,7 @@ const CSIEscape = struct {
             },
             // DA -- Device Attributes
             'c' => if (self.arg[0] == 0)
-                ttywrite(cfg.vtiden, false),
+                xttywrite(cfg.vtiden, false),
                 // CUF, HPR -- Cursor <N> Forward
             'C', 'a' => {
                 if (self.arg[0] == 0) self.arg[0] = 1;
@@ -1599,7 +1599,7 @@ const CSIEscape = struct {
                     term.tabs[term.cur.x] = 0;
                 },
                 3 => { // clear all the tabs
-                    std.mem.set(u32, term.tabs[0..term.col], 0);
+                    mem.set(u32, term.tabs[0..term.col], 0);
                 },
                 else => {
                     unknown = true;
@@ -1710,7 +1710,7 @@ const CSIEscape = struct {
             'n' => if (self.arg[0] == 6) {
                 var buf: [40]u8 = undefined;
                 const str = std.fmt.bufPrint(&buf, "\x1b[{};{}R", .{ term.cur.y + 1, term.cur.x + 1 }) catch unreachable;
-                ttywrite(str, false);
+                xttywrite(str, false);
             },
             // DECSTBM -- Set Scrolling region
             'r' => if (self.priv) {
@@ -1884,6 +1884,10 @@ const STREscape = struct {
     }
 };
 
+var iofd: os.fd_t = os.STDOUT_FILENO;
+var cmdfd: os.fd_t = undefined;
+var pid: os.pid_t = undefined;
+
 fn xwrite(fd: os.fd_t, str: []const u8) !void {
     var written: usize = 0;
     while (written != str.len) {
@@ -1900,9 +1904,6 @@ fn xrealloc(comptime T: type, p: ?[*]T, len: usize) [*]T {
     return @ptrCast([*]T, @alignCast(@alignOf(T), external.xrealloc(@ptrCast(?*c_void, p), len * @sizeOf(T))));
 }
 
-fn ttywrite(s: []const u8, may_echo: bool) void {
-    external.ttywrite(s.ptr, s.len, @boolToInt(may_echo));
-}
 
 fn utf8decode(ch: []const u8, u: *Rune) usize {
     u.* = utf_invalid;
@@ -1984,7 +1985,7 @@ fn base64dec_getc(source: *[*:0]const u8) u8 {
 
 fn base64dec(source: [*:0]const u8) ?[*:0]u8 {
     var src = source;
-    var in_len: usize = std.mem.len(src);
+    var in_len: usize = mem.len(src);
 
     if (in_len % 4 != 0)
         in_len += 4 - (in_len % 4);
@@ -2054,3 +2055,262 @@ export fn draw() void {
 }
 
 const resettitle = external.resettitle;
+
+export fn execsh(cmd: [*:0]u8, arguments: ?[*:null]?[*:0]u8) void {
+    std.c._errno().* = 0;
+    const pw = @as(?*c.struct_passwd, c.getpwuid(c.getuid())) orelse {
+        if (std.c._errno().* != 0)
+            die("getpwuid: {s}\n", .{c.strerror(std.c._errno().*)})
+        else
+            die("who are you?\n", .{});
+    };
+
+    const sh = std.c.getenv("SHELL") orelse
+        if (pw.pw_shell[0] != 0) pw.pw_shell else cmd;
+
+    var prog = if (arguments) |args|
+        args[0]
+    else (cfg.utmp orelse sh);
+    const args = arguments orelse &[_:null]?[*:0]u8{prog};
+
+    _ = c.unsetenv("COLUMNS");
+    _ = c.unsetenv("LINES");
+    _ = c.unsetenv("TERMCAP");
+    _ = c.setenv("LOGNAME", pw.pw_name, 1);
+    _ = c.setenv("USER", pw.pw_name, 1);
+    _ = c.setenv("SHELL", sh, 1);
+    _ = c.setenv("HOME", pw.pw_dir, 1);
+    _ = c.setenv("TERM", cfg.termname, 1);
+
+    const SIG_DFL = null;
+    const sact = os.Sigaction{
+        .sigaction = os.SIG_DFL,
+        .mask = os.empty_sigset,
+        .flags = 0,
+    };
+    os.sigaction(os.SIGCHLD, &sact, null);
+    os.sigaction(os.SIGHUP, &sact, null);
+    os.sigaction(os.SIGINT, &sact, null);
+    os.sigaction(os.SIGQUIT, &sact, null);
+    os.sigaction(os.SIGTERM, &sact, null);
+    os.sigaction(os.SIGALRM, &sact, null);
+
+    _ = c.execvp(prog, args);
+    c._exit(1);
+}
+
+export fn stty(arguments: [*:null]?[*:0]u8) void {
+    var cmd_buf: [c._POSIX_ARG_MAX]u8 = undefined;
+    var i = cfg.stty_args.len;
+    if (i > cmd_buf.len - 1)
+        die("incorrect stty parameters\n", .{});
+    mem.copy(u8, &cmd_buf, cfg.stty_args);
+
+    var arg_p = arguments;
+    while (arg_p.*) |ap| : (arg_p += 1) {
+        const arg = mem.span(ap);
+        // enough space for " " ++ <arg> ++ "\0"
+        if (i + 1 + arg.len + 1 > cmd_buf.len)
+            die("stty parameter length too long\n", .{});
+        cmd_buf[i] = ' ';
+        mem.copy(u8, cmd_buf[i+1..], arg);
+        i += 1 + arg.len;
+    }
+    cmd_buf[i] = 0;
+    const cmd = cmd_buf[0 .. i :0];
+
+    if (c.system(cmd_buf[0..i :0].ptr) != 0)
+        c.perror("Couldn't call stty");
+}
+
+fn sigchld(sig: i32, info: *os.siginfo_t, ctx: ?*c_void) callconv(.C) void {
+    const wp = os.waitpid(pid, os.WNOHANG);
+
+    if (pid != wp.pid)
+        return;
+
+    const exit_status = os.WEXITSTATUS(wp.status);
+    if (os.WIFEXITED(wp.status) and os.WEXITSTATUS(wp.status) != 0)
+        die("child exited with status {}\n", .{exit_status})
+    else if (os.WIFSIGNALED(wp.status))
+        die("child terminated due to signal {}\n", .{os.WTERMSIG(wp.status)});
+    std.os.exit(0);
+}
+
+export fn ttynew(line: ?[*:0]const u8, cmd: [*:0]u8, out: ?[*:0]const u8, args: [*:null]?[*:0]u8) std.os.fd_t {
+    if (out) |path| {
+        term.mode.set(.Print, true);
+        iofd = if (mem.eql(u8, "-", mem.span(path)))
+            os.STDOUT_FILENO
+        else
+            os.openZ(path, os.O_WRONLY | os.O_CREAT, 0o666) catch blk: {
+                std.debug.warn("Error opening {}:{}\n", .{out, c.strerror(std.c._errno().*)});
+                break :blk -1;
+            };
+    }
+    if (line) |l| {
+        cmdfd = os.openZ(l, os.O_RDWR, 0) catch
+            die("open line '{}' failed: {s}\n", .{ line, c.strerror(std.c._errno().*) });
+        os.dup2(cmdfd, 0) catch {};
+        stty(args);
+        return cmdfd;
+    }
+    var m: c_int = undefined;
+    var s: c_int = undefined;
+    // seems to work fine on linux, openbsd and freebsd
+    if (c.openpty(&m, &s, null, null, null) < 0)
+        die("openpty failed: {s}\n", .{c.strerror(std.c._errno().*)});
+    pid = os.fork() catch
+        die("fork failed: {s}\n", .{c.strerror(std.c._errno().*)});
+    switch (pid) {
+        0 => {
+            os.close(iofd);
+            _ = c.setsid(); // create a new process group
+            os.dup2(s, 0) catch {};
+            os.dup2(s, 1) catch {};
+            os.dup2(s, 2) catch {};
+            if (os.system.ioctl(s, os.TIOCSCTTY, @intToPtr(?*c_void, 0)) < 0)
+                die("ioctl TIOCSCTTY failed: {s}\n", .{c.strerror(std.c._errno().*)});
+            os.close(s);
+            os.close(m);
+            if (std.builtin.os.tag == .openbsd) {
+                if (c.pledge("stdio getpw proc exec", null) == -1) die("pledge\n", .{});
+            }
+            execsh(cmd, args);
+        },
+        else => {
+            if (std.builtin.os.tag == .openbsd) {
+                if (c.pledge("stdio rpath tty proc", null) == -1) die("pledge\n", .{});
+            }
+            os.close(s);
+            cmdfd = m;
+            const sact = os.Sigaction{
+                .sigaction = sigchld,
+                .mask = os.empty_sigset,
+                .flags = 0,
+            };
+            os.sigaction(os.SIGCHLD, &sact, null);
+        },
+    }
+    return cmdfd;
+}
+
+export fn ttyread() usize {
+    const static = struct {
+        pub var buf: [c.BUFSIZ]u8 = undefined;
+        pub var buflen: usize = 0;
+    };
+    const read = os.read(cmdfd, static.buf[static.buflen..]) catch
+        die("couldn't read from shell: {s}\n", .{c.strerror(std.c._errno().*)});
+    static.buflen += read;
+    const written = term.write(static.buf[0..static.buflen], false);
+    static.buflen -= written;
+    // keep any uncomplete utf8 char for the next call
+    if (static.buflen > 0)
+        std.mem.copy(u8, static.buf[0..], static.buf[written .. written + static.buflen]);
+    return read;
+}
+
+export fn ttywrite(s: [*]const u8, slen: usize, may_echo: c_int) void {
+    const str = s[0..slen];
+    if (may_echo != 0 and term.mode.get(.Echo))
+        _ = term.write(str, true);
+
+    if (!term.mode.get(.CrLf)) {
+        external.ttywriteraw(cmdfd, s, slen);
+        return;
+    }
+
+    // This is similar to how the kernel handles ONLCR for ttys
+    var i: usize = 0;
+    while (i < str.len) {
+        var n: usize = undefined;
+        if (str[i] == '\r') {
+            n = 1;
+            external.ttywriteraw(cmdfd, "\r\n", 2);
+        } else {
+            n = std.mem.indexOfScalar(u8, str[i..], '\r') orelse str.len - i;
+            external.ttywriteraw(cmdfd, str[i..].ptr, n);
+        }
+        i += n;
+    }
+}
+fn xttywrite(s: []const u8, may_echo: bool) void {
+    ttywrite(s.ptr, s.len, @boolToInt(may_echo));
+}
+
+// fn ttywriteraw(s: []const u8) void {
+//     var lim: usize = 256;
+// 
+//     // Remember that we are using a pty, which might be a modem line.
+//     // Writing too much will clog the line. That's why we are doing this
+//     // dance.
+//     // FIXME: Migrate the world to Plan 9.
+//     var i: usize = 0;
+//     while (i < s.len) {
+//         const n = s.len - i;
+//         var wfd: c.fd_set = undefined;
+//         var rfd: c.fd_set = undefined;
+//         c._FD_ZERO(&wfd);
+//         c._FD_ZERO(&rfd);
+//         c._FD_SET(cmdfd, &wfd);
+//         c._FD_SET(cmdfd, &rfd);
+// 
+//         // Check if we can write.
+//         if (c.pselect(cmdfd + 1, &rfd, &wfd, null, null, null) < 0) {
+//             if (std.c._errno().* == os.EINTR) continue;
+//             die("select failed: {s}\n", .{c.strerror(std.c._errno().*)});
+//         }
+//         if (c._FD_ISSET(cmdfd, &wfd)) {
+//             // Only write the bytes written by xttywrite() or the
+//             // default of 256. This seems to be a reasonable value
+//             // for a serial line. Bigger values might clog the I/O.
+//             const written = std.c.write(cmdfd, s[i..].ptr, std.math.min(n, lim));
+//             if (written < 0)
+//                 die("write error on tty: {s}\n", .{c.strerror(std.c._errno().*)});
+//             const r = @intCast(usize, written);
+//             if (r < n) {
+//                 // We weren't able to write out everything.
+//                 // This means the buffer is getting full again. Empty it.
+//                 if (n < lim) lim = ttyread();
+//                 i += r;
+//             } else {
+//                 // All bytes have been written.
+//                 break;
+//             }
+//         }
+//         if (c._FD_ISSET(cmdfd, &rfd))
+//             lim = ttyread();
+//     }
+//     return;
+// }
+
+export fn ttyresize(tw: c_int, th: c_int) void {
+    var w: os.winsize = .{
+        .ws_row = @intCast(u16, term.row),
+        .ws_col = @intCast(u16, term.col),
+        .ws_xpixel = @intCast(u16, tw),
+        .ws_ypixel = @intCast(u16, th),
+    };
+    if (os.system.ioctl(cmdfd, os.TIOCSWINSZ, &w) < 0)
+        std.debug.warn("Couldn't set window size: {}\n", .{c.strerror(std.c._errno().*)});
+}
+
+export fn ttyhangup() void {
+    // Send SIGHUP to shell
+    os.kill(pid, os.SIGHUP) catch {};
+}
+
+export fn tprinter(s: [*]const u8, len: usize) void {
+    if (iofd != -1)
+        (std.fs.File{ .handle = iofd, }).writeAll(s[0..len]) catch {
+            c.perror("Error writing to output file");
+            os.close(iofd);
+            iofd = -1;
+    };
+}
+
+export fn _sendbreak() void {
+    if (c.tcsendbreak(cmdfd, 0) != 0)
+        c.perror("Error sending break");
+}
